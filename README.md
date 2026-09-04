@@ -1,63 +1,64 @@
 # overpass-pmtiler
 
-Async extraction + PMTiles bake service co-located with the OSM for Cities
-Overpass instance.
+Turn an Overpass API query into a PMTiles archive. An async extraction +
+bake service designed to run next to an Overpass instance.
 
-## Why
+## What it does
 
-The app serves per-dataset vector tiles (PMTiles) instead of inline GeoJSON
-(osmforcities/osmforcities#322). Baking happens next to Overpass for data
-locality: a metro-scale fetch is 2.23 GB on the wire but a localhost read
-here; only the ~53 MB archive plus a stats JSON ship to the app box.
+Submit an Overpass QL query as a job. The service:
 
-Division of labor:
+1. fetches the result from Overpass, streamed straight to disk (metro-scale
+   results are multiple GB — nothing is buffered in memory),
+2. converts it to newline-delimited GeoJSON in a single streaming pass,
+   accumulating dataset stats along the way,
+3. bakes a PMTiles vector-tile archive with tippecanoe,
+4. serves the outputs for the caller to pull.
 
-- **App**: size detection (count probe), status UX, DB rows, tile serving.
-  Pulls finished outputs and serves them from its own nginx/Cloudflare.
-- **This service**: fetch (localhost Overpass), stream-convert to
-  nd-geojson, stats accumulation, tippecanoe bake.
+Designed for data locality: run it on (or next to) the Overpass server so a
+multi-GB fetch is a localhost read; only the archive (tens of MB) plus a
+small stats JSON leave the machine.
 
-Decisions (2026-09-05):
-
-- App box pulls outputs. This box stays private (IP-allowlisted nginx);
-  serving availability is decoupled from this box being up.
-- ALL datasets bake here — single bake path, no tippecanoe on the app box.
-- This service is the single Overpass data client: job input is the
-  Overpass query itself, fetched via localhost.
+Born from OSM for Cities (osmforcities/osmforcities#322) — per-dataset
+vector tiles for city-scale OSM datasets — but nothing here is specific to
+it: any application that wants live-data PMTiles out of an Overpass
+instance can use it.
 
 ## Job contract
 
 ```
-POST   /pmtiler/jobs      { id, query, maxsize, timeout } -> 202 { id, state }
-GET    /pmtiler/jobs/:id  -> { state: queued|fetching|converting|baking|done|failed,
-                               startedAt, error?, stats? }
-GET    /pmtiler/jobs/:id/output.pmtiles
-GET    /pmtiler/jobs/:id/stats.json
-GET    /pmtiler/jobs/:id/data.ndjson   (small datasets: app pulls to fill JSONB;
-                                        metro export: app proxies on demand)
-DELETE /pmtiler/jobs/:id               (ack -> cleanup)
+POST   /jobs      { id, query, maxsize, timeout } -> 202 { id, state }
+GET    /jobs/:id  -> { state: queued|fetching|converting|baking|done|failed,
+                       startedAt, error?, stats? }
+GET    /jobs/:id/output.pmtiles
+GET    /jobs/:id/stats.json
+GET    /jobs/:id/data.ndjson
+DELETE /jobs/:id               (ack -> cleanup)
 ```
 
-- `id` is supplied by the app (`{datasetId}-{snapshotVersion}`). POST of an
-  existing id returns its current state — idempotent resubmits, no ID
-  mapping anywhere.
-- `failed` carries the Overpass error text through.
-- Cron sweep removes jobs older than N days regardless of ack.
+- `id` is supplied by the caller. POST of an existing id returns its
+  current state — idempotent resubmits, no ID mapping anywhere.
+- `failed` carries the Overpass (or stage) error text through.
+- A periodic sweep removes jobs older than a configurable age regardless
+  of ack.
 
-## Internals
+## Design principles
 
-Deliberately boring: one Python service. Jobs run **one at a time** off a
-queue — serial execution doubles as contention control (at most one bake
-competes with live Overpass queries). Job state = one JSON file per job in
-a spool dir; no database. Fetch = streamed localhost `POST /api/interpreter`
-to disk. Bake = apt tippecanoe under `nice`:
-`tippecanoe -zg --drop-densest-as-needed -P -l features`, with numeric
-epoch `_ts` per feature (string `_ts` silently breaks the client's age
-ramp).
+- **One job at a time.** The serial queue doubles as contention control:
+  a bake never competes with more than itself for the CPU that also serves
+  interactive Overpass queries.
+- **No database.** Job state is one JSON file per job in a spool
+  directory. Outputs are immutable per job id.
+- **Streaming everywhere.** Element-boundary splitting + per-element parse
+  keeps conversion at ~13 MB RSS regardless of input size. Token-level
+  streaming parsers are ~40x slower; whole-collection converters
+  (osmtogeojson) are superlinear — both unusable at metro scale.
+- **Private by design.** The service has no auth. Bind it to localhost and
+  expose it only through a reverse proxy restricted to trusted clients.
 
-## Measured facts (2026-09-04 spike; box: 12 vCPU / 64 GB)
+## Reference measurements (12 vCPU / 64 GB host, 2026-09)
 
-Sao Paulo buildings (rel 298285, 2.14M elements), end to end ~10 min:
+Sao Paulo `building=*` (relation 298285, 2.14M elements), end to end
+~10 min:
 
 | stage | result |
 | --- | --- |
@@ -66,32 +67,29 @@ Sao Paulo buildings (rel 298285, 2.14M elements), end to end ~10 min:
 | tippecanoe bake | 194s, 1.2 GB peak RSS |
 | output | 53 MB PMTiles (42:1 vs wire) |
 
-- Overpass `maxsize` is driven by area evaluation, not output size.
-  Usable per-query ceiling on this instance: between 1 and 3 GiB
-  (>= 4 GiB fails with an areas-dispatcher protocol error).
-- Streaming conversion must split the `elements` array on element
-  boundaries and `JSON.parse` per element — token-level streaming is
-  ~40x slower; osmtogeojson is superlinear and unusable at this scale.
-- Disk: ~3 GB transient per metro job (raw JSON + nd-geojson) + ~53 MB
-  durable until ack.
+- Overpass `[maxsize:]` is driven by area evaluation, not output size; the
+  default 512 MiB fails metro-scale queries that succeed fine at 768 MiB.
+- Tiles carry a numeric epoch `_ts` per feature (bake flag set); a string
+  `_ts` silently breaks MapLibre `step` expressions downstream.
+- Plan ~3 GB transient disk per metro-scale job (raw JSON + nd-geojson) on
+  top of the archive.
 
-Canonical stress datasets:
+Useful stress datasets (any Overpass instance with area support):
 
 | case | area | relation | size |
 | --- | --- | --- | --- |
 | standard metro | Sao Paulo (municipality) | 298285 | 2.14M buildings |
-| biggest servable | Sao Paulo (state) | 298204 | 2.71M buildings |
-| must fail gracefully | Tokyo Metropolis | 1543125 | >3 GiB to even count |
+| large state | Sao Paulo (state) | 298204 | 2.71M buildings |
+| very large | Tokyo Metropolis | 1543125 | >3 GiB to even count |
+
+## Deploy
+
+A single Python service plus tippecanoe (apt). Run under systemd; front
+with a reverse proxy that serves the output files with Range support.
+Example unit and nginx snippet: #8.
 
 ## Spike code
 
 `spike/` holds the probe scripts and render harness this design came from
-(2026-09-04). The baked `sp-buildings.pmtiles` (53 MB) is deliberately not
-in git — regenerate with `convert_fast.py` + tippecanoe. See
-`spike/README.md`.
-
-## Deploy
-
-Ansible role in the infra repo installs and runs the service (systemd unit
-`pmtiler.service`, nginx location `/pmtiler/` on the existing allowlisted
-vhost). This repo ships the service code only.
+(2026-09). The baked `sp-buildings.pmtiles` (53 MB) is deliberately not in
+git — regenerate with `spike/convert_fast.py` + tippecanoe.
