@@ -96,8 +96,27 @@ def write_job(job):
 
 def set_state(job, state):
     job["state"] = state
+    job.pop("progress", None)
     write_job(job)
     log("job", job["id"], "->", state)
+
+
+def progress_writer(job, stage, interval=1.0):
+    """Throttled progress into job.json -- callers poll state, nothing is pushed.
+
+    Also the abort signal: write_job raises Aborted once the job dir is gone, so
+    a DELETE stops the running stage instead of waiting for the next boundary.
+    """
+    last = [0.0]
+
+    def tick(**fields):
+        if time.time() - last[0] < interval:
+            return
+        last[0] = time.time()
+        job["progress"] = dict(stage=stage, **fields)
+        write_job(job)
+
+    return tick
 
 
 def sweep():
@@ -178,11 +197,20 @@ def stage_fetch(job, path):
         OVERPASS, data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"})
     ctx = ssl._create_unverified_context() if INSECURE else None
+    tick = progress_writer(job, "fetching")
     try:
         with urllib.request.urlopen(
                 req, context=ctx, timeout=(job.get("timeout") or 180) + 60) as r, \
                 open(path, "wb") as out:
-            shutil.copyfileobj(r, out, 1024 * 1024)
+            got = 0
+            while True:
+                chunk = r.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                got += len(chunk)
+                # no total: Overpass answers chunked, there is no Content-Length
+                tick(bytes=got)
     except urllib.error.HTTPError as e:
         raise StageError(html_error(e.read().decode("utf-8", "replace")))
     except urllib.error.URLError as e:
@@ -195,7 +223,7 @@ def stage_fetch(job, path):
 
 # --- convert ---------------------------------------------------------------
 
-def convert(inp, outp):
+def convert(inp, outp, tick=None):
     """Overpass JSON -> nd-geojson + accumulator stats in one bounded-memory pass.
 
     Splits the elements array on element boundaries by brace depth (line-based;
@@ -311,6 +339,8 @@ def convert(inp, outp):
             out.write(json.dumps({"type": "Feature", "properties": props,
                                   "geometry": geometry},
                                  separators=(",", ":")) + "\n")
+            if tick:  # element total is unknown until the pass ends
+                tick(features=counts["nodes"] + counts["ways"])
 
     features = counts["nodes"] + counts["ways"]
     mapper_bands = [0, 0, 0, 0]
@@ -365,16 +395,32 @@ def validate_pmtiles(path):
         raise StageError("bake produced an archive with no tiles")
 
 
+PCT_RE = re.compile(r"(\d+(?:\.\d+)?)%")
+
+
 def stage_bake(job, jd):
     out = os.path.join(jd, "output.pmtiles")
     cmd = ["nice", "-n", NICE, "tippecanoe", "-f", "-zg",
            "--drop-densest-as-needed", "-P", "-l", "features",
            "-o", out, os.path.join(jd, "data.ndjson")]
     # tmp files stay inside the job dir, never /tmp
-    p = subprocess.run(cmd, cwd=jd, env=dict(os.environ, TMPDIR=jd),
-                       capture_output=True, text=True)
-    if p.returncode != 0:
-        raise StageError("tippecanoe: " + (p.stderr.strip()[-2000:] or "failed"))
+    p = subprocess.Popen(cmd, cwd=jd, env=dict(os.environ, TMPDIR=jd),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                         text=True)
+    # tippecanoe redraws "  NN.N%  z/x/y" on \r; keep a tail for the error text
+    tick = progress_writer(job, "baking")
+    tail = ""
+    while True:
+        buf = p.stderr.read(4096)
+        if not buf:
+            break
+        tail = (tail + buf)[-4000:]
+        found = PCT_RE.findall(buf)
+        if found:
+            tick(pct=float(found[-1]))
+    if p.wait() != 0:
+        raise StageError("tippecanoe: " + (tail.replace("\r", "\n").strip()[-2000:]
+                                           or "failed"))
     validate_pmtiles(out)
     log("baked", job["id"], os.path.getsize(out), "bytes")
 
@@ -392,7 +438,8 @@ def run_job(jid):
         stage_fetch(job, raw)
 
         set_state(job, "converting")
-        stats = convert(raw, os.path.join(jd, "data.ndjson"))
+        stats = convert(raw, os.path.join(jd, "data.ndjson"),
+                        progress_writer(job, "converting"))
         with open(os.path.join(jd, "stats.json"), "w", encoding="utf-8") as f:
             json.dump(stats, f)
         job["stats"] = stats
@@ -508,7 +555,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_file(os.path.join(HERE, "viewer.html"), "text/html")
         if path == "/jobs":
             return self.send_json(200, sorted(
-                ({"id": j["id"], "state": j["state"], "startedAt": j["startedAt"]}
+                ({"id": j["id"], "state": j["state"], "startedAt": j["startedAt"],
+                  "progress": j.get("progress")}
                  for j in filter(None, map(read_job, os.listdir(SPOOL)))),
                 key=lambda j: j["startedAt"], reverse=True))
         jid, name = self.parse()
@@ -519,6 +567,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.err(404, "no such job")
         if name is None:
             view = {"id": jid, "state": job["state"], "startedAt": job["startedAt"]}
+            if job.get("progress"):
+                view["progress"] = job["progress"]
             if job.get("error"):
                 view["error"] = job["error"]
             if job.get("stats"):
@@ -665,6 +715,10 @@ def selftest():
         assert s["editRecencyBands"][3] == 1
         assert s["qualityMetrics"]["staleElementsCount"] == 1
         assert s["tagCounts"][0] == {"key": "building", "count": 2}, s["tagCounts"]
+
+        # tippecanoe redraws progress on \r; we take the last percentage in a read
+        assert PCT_RE.findall("\r  31.0%  12/2098/1352  \r  100.0%  14/8392/5414")[-1] \
+            == "100.0"
 
         assert apply_settings("[out:json][timeout:9];way;out;", 512, 60) == \
             "[out:json][maxsize:512][timeout:60];way;out;"

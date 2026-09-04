@@ -62,16 +62,19 @@ def get_json(base, path):
 
 
 def poll(base, jid):
-    """Poll to a terminal state, collecting every state seen on the way."""
-    seen = []
+    """Poll to a terminal state, collecting states and progress seen on the way."""
+    seen, progress = [], []
     end = time.time() + DEADLINE
     while time.time() < end:
         status, job = get_json(base, "/jobs/" + jid)
         assert status == 200, (status, job)
+        if job.get("progress"):
+            progress.append(job["progress"])
         if not seen or seen[-1] != job["state"]:
             seen.append(job["state"])
             print("  state:", job["state"], flush=True)
         if job["state"] in ("done", "failed"):
+            job["_progress"] = progress
             return job, seen
         time.sleep(2)
     raise AssertionError("job %s stuck in %s after %ss" % (jid, seen[-1], DEADLINE))
@@ -105,6 +108,14 @@ def main():
         assert job["state"] == "done", "job failed: %s" % job.get("error")
         assert set(seen) <= STATES, seen
         assert "fetching" in seen and "done" in seen, seen
+
+        # progress is reported per stage, and cleared on the state change
+        assert job["_progress"], "no progress was ever reported"
+        assert any(p["stage"] == "fetching" and p["bytes"] > 0
+                   for p in job["_progress"]), job["_progress"]
+        assert "progress" not in job, "progress must be cleared on a terminal state"
+        print("progress samples:", len(job["_progress"]),
+              "stages:", sorted({p["stage"] for p in job["_progress"]}))
 
         stats = job["stats"]
         assert abs(stats["features"] - EXPECTED_FEATURES) < EXPECTED_FEATURES * 0.2, \
