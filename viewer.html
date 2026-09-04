@@ -12,6 +12,7 @@
          font:12px/1.5 monospace; padding:8px 10px; border:1px solid #ccc;
          max-width:32em; max-height:90vh; overflow:auto; }
   #hud a { display:block; color:#06c; }
+  #hud a.back { margin-bottom:.5em; }
   .band { display:inline-block; width:1.2em; height:.8em; margin-right:.3em; }
 </style>
 </head>
@@ -32,12 +33,26 @@ const now = Math.floor(Date.now() / 1000);
 const ageColor = ["step", ["-", now, ["get", "_ts"]],
   BANDS[0][0], 90 * d, BANDS[1][0], 365 * d, BANDS[2][0], 730 * d, BANDS[3][0]];
 
+// A running stage reports what it can: bytes (fetch gets no Content-Length from
+// Overpass), features so far, or a true percentage from tippecanoe.
+const BACK = '<a class="back" href="/">&larr; all jobs</a>';
+
+function progressText(p) {
+  if (!p) return "";
+  if (p.pct !== undefined) return ` ${p.pct.toFixed(1)}%`;
+  if (p.bytes !== undefined) return ` ${(p.bytes / 1048576).toFixed(0)} MB`;
+  if (p.features !== undefined) return ` ${p.features.toLocaleString()} features`;
+  return "";
+}
+
 async function index() {
   const jobs = await (await fetch("/jobs")).json();
   hud.innerHTML = jobs.length
-    ? "<b>jobs</b>" + jobs.map(j =>
-        `<a href="?job=${encodeURIComponent(j.id)}">${j.id} — ${j.state}</a>`).join("")
+    ? "<b>pmtiler jobs</b>" + jobs.map(j =>
+        `<a href="?job=${encodeURIComponent(j.id)}">${j.id} — ${j.state}` +
+        `${progressText(j.progress)}</a>`).join("")
     : "no jobs in the spool yet — POST one to /jobs";
+  setTimeout(index, 2000);
 }
 
 async function show() {
@@ -46,15 +61,18 @@ async function show() {
     job = await (await fetch("/jobs/" + encodeURIComponent(jobId))).json();
     if (job.error && !job.state) { hud.textContent = job.error; return; }
     if (job.state === "done" || job.state === "failed") break;
-    hud.textContent = `${jobId}: ${job.state}…`;
+    const bar = job.progress && job.progress.pct !== undefined
+      ? `<br><progress value="${job.progress.pct}" max="100"></progress>` : "";
+    hud.innerHTML =
+      `${BACK}<b>${jobId}</b><br>${job.state}${progressText(job.progress)}${bar}`;
     await new Promise(r => setTimeout(r, 2000));
   }
   if (job.state === "failed") {
-    hud.innerHTML = `<b>${jobId} failed</b><br>` + job.error;
+    hud.innerHTML = `${BACK}<b>${jobId} failed</b><br>` + job.error;
     return;
   }
   const s = job.stats;
-  hud.innerHTML = `<b>${jobId}</b><br>` + [
+  hud.innerHTML = `${BACK}<b>${jobId}</b><br>` + [
     `${s.features.toLocaleString()} features ` +
       `(${s.ways.toLocaleString()} ways, ${s.nodes.toLocaleString()} nodes` +
       (s.relationsSkipped ? `, ${s.relationsSkipped.toLocaleString()} relations skipped` : "") + ")",
