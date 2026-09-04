@@ -113,6 +113,9 @@ def main():
         assert job["_progress"], "no progress was ever reported"
         assert any(p["stage"] == "fetching" and p["bytes"] > 0
                    for p in job["_progress"]), job["_progress"]
+        # convert may be too fast to sample here; when caught it must be a true pct
+        assert all(0 <= p["pct"] <= 100 for p in job["_progress"] if "pct" in p), \
+            job["_progress"]
         assert "progress" not in job, "progress must be cleared on a terminal state"
         print("progress samples:", len(job["_progress"]),
               "stages:", sorted({p["stage"] for p in job["_progress"]}))

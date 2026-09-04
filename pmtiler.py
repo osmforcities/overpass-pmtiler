@@ -232,6 +232,8 @@ def convert(inp, outp, tick=None):
     """
     t0 = time.time()
     now = int(time.time())
+    total = os.path.getsize(inp)  # the input is complete here, so pct is honest
+    read = 0
     counts = {"nodes": 0, "ways": 0, "relationsSkipped": 0, "skipped": 0}
     editors, changesets = set(), set()
     recent_editors, recent_changesets = set(), set()
@@ -241,31 +243,35 @@ def convert(inp, outp, tick=None):
     oldest = newest = None
     bbox = [180.0, 90.0, -180.0, -90.0]
 
-    with open(inp, encoding="utf-8") as f, open(outp, "w", encoding="utf-8") as out:
+    # read binary: len(line) is then exact bytes, and json.loads takes bytes, so
+    # progress costs nothing (f.tell() is disabled while iterating a text file)
+    with open(inp, "rb") as f, open(outp, "w", encoding="utf-8") as out:
         for line in f:  # skip the header, stop at the elements array
-            if line.startswith('  "elements":'):
+            read += len(line)
+            if line.startswith(b'  "elements":'):
                 break
         depth = 0
         buf = []
         for line in f:
+            read += len(line)
             s = line.strip()
             if depth == 0:
-                if s.startswith("{"):
-                    depth = s.count("{") - s.count("}")
+                if s.startswith(b"{"):
+                    depth = s.count(b"{") - s.count(b"}")
                     buf = [s]
                     if depth:
                         continue
-                    raw = s.rstrip(",")
-                elif s.startswith("]"):
+                    raw = s.rstrip(b",")
+                elif s.startswith(b"]"):
                     break
                 else:
                     continue
             else:
                 buf.append(s)
-                depth += s.count("{") - s.count("}")
+                depth += s.count(b"{") - s.count(b"}")
                 if depth > 0:
                     continue
-                raw = "".join(buf).rstrip(",")
+                raw = b"".join(buf).rstrip(b",")
             try:
                 el = json.loads(raw)
             except ValueError:
@@ -339,8 +345,9 @@ def convert(inp, outp, tick=None):
             out.write(json.dumps({"type": "Feature", "properties": props,
                                   "geometry": geometry},
                                  separators=(",", ":")) + "\n")
-            if tick:  # element total is unknown until the pass ends
-                tick(features=counts["nodes"] + counts["ways"])
+            if tick:
+                tick(features=counts["nodes"] + counts["ways"], bytes=read,
+                     total=total, pct=round(100.0 * read / total, 1))
 
     features = counts["nodes"] + counts["ways"]
     mapper_bands = [0, 0, 0, 0]
@@ -395,32 +402,32 @@ def validate_pmtiles(path):
         raise StageError("bake produced an archive with no tiles")
 
 
-PCT_RE = re.compile(r"(\d+(?:\.\d+)?)%")
+PROGRESS_RE = re.compile(r'^\{"progress":\s*([\d.]+)\}$')
 
 
 def stage_bake(job, jd):
     out = os.path.join(jd, "output.pmtiles")
     cmd = ["nice", "-n", NICE, "tippecanoe", "-f", "-zg",
            "--drop-densest-as-needed", "-P", "-l", "features",
+           # --json-progress replaces the \r-redrawn bar with one line per tick,
+           # and leaves real errors on stderr untouched
+           "--json-progress", "--progress-interval=1",
            "-o", out, os.path.join(jd, "data.ndjson")]
     # tmp files stay inside the job dir, never /tmp
     p = subprocess.Popen(cmd, cwd=jd, env=dict(os.environ, TMPDIR=jd),
                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                          text=True)
-    # tippecanoe redraws "  NN.N%  z/x/y" on \r; keep a tail for the error text
     tick = progress_writer(job, "baking")
-    tail = ""
-    while True:
-        buf = p.stderr.read(4096)
-        if not buf:
-            break
-        tail = (tail + buf)[-4000:]
-        found = PCT_RE.findall(buf)
-        if found:
-            tick(pct=float(found[-1]))
+    errors = []
+    for line in p.stderr:  # tippecanoe already throttles, so every line is used
+        m = PROGRESS_RE.match(line.strip())
+        if m:
+            tick(pct=float(m.group(1)))
+        elif line.strip():
+            errors.append(line.rstrip())
+            del errors[:-20]
     if p.wait() != 0:
-        raise StageError("tippecanoe: " + (tail.replace("\r", "\n").strip()[-2000:]
-                                           or "failed"))
+        raise StageError("tippecanoe: " + ("\n".join(errors)[-2000:] or "failed"))
     validate_pmtiles(out)
     log("baked", job["id"], os.path.getsize(out), "bytes")
 
@@ -696,9 +703,19 @@ def selftest():
         src, dst = os.path.join(d, "raw.json"), os.path.join(d, "out.ndjson")
         with open(src, "w", encoding="utf-8") as f:
             f.write(FIXTURE)
-        s = convert(src, dst)
+        ticks = []
+        s = convert(src, dst, lambda **kw: ticks.append(kw))  # unthrottled
         with open(dst, encoding="utf-8") as f:
             feats = [json.loads(line) for line in f]
+
+        # convert knows its denominator: the input file is complete by now
+        assert len(ticks) == 3, ticks
+        assert [t["features"] for t in ticks] == [1, 2, 3], ticks
+        assert all(t["total"] == os.path.getsize(src) for t in ticks), ticks
+        assert [t["bytes"] for t in ticks] == sorted(t["bytes"] for t in ticks)
+        # < 100 at the last feature: the skipped relation and the closing
+        # brackets are still ahead of the read cursor
+        assert 80 < ticks[-1]["pct"] < 100, ticks[-1]
 
         assert [f["geometry"]["type"] for f in feats] == \
             ["Polygon", "LineString", "Point"], feats
@@ -716,9 +733,9 @@ def selftest():
         assert s["qualityMetrics"]["staleElementsCount"] == 1
         assert s["tagCounts"][0] == {"key": "building", "count": 2}, s["tagCounts"]
 
-        # tippecanoe redraws progress on \r; we take the last percentage in a read
-        assert PCT_RE.findall("\r  31.0%  12/2098/1352  \r  100.0%  14/8392/5414")[-1] \
-            == "100.0"
+        # --json-progress emits one object per tick; anything else is error text
+        assert PROGRESS_RE.match('{"progress":33.5}').group(1) == "33.5"
+        assert PROGRESS_RE.match("Did not read any valid geometries") is None
 
         assert apply_settings("[out:json][timeout:9];way;out;", 512, 60) == \
             "[out:json][maxsize:512][timeout:60];way;out;"
