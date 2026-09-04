@@ -25,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 SPOOL = os.path.abspath(os.environ.get("PMTILER_SPOOL", "spool"))
 OVERPASS = os.environ.get("PMTILER_OVERPASS", "http://localhost/api/interpreter")
 PORT = int(os.environ.get("PMTILER_PORT", "8099"))
@@ -502,6 +503,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_json(202, {"id": jid, "state": "queued"})
 
     def do_GET(self):
+        path = self.path.split("?")[0].rstrip("/") or "/"
+        if path in ("/", "/viewer.html"):  # visual inspection, same-origin
+            return self.send_file(os.path.join(HERE, "viewer.html"), "text/html")
+        if path == "/jobs":
+            return self.send_json(200, sorted(
+                ({"id": j["id"], "state": j["state"], "startedAt": j["startedAt"]}
+                 for j in filter(None, map(read_job, os.listdir(SPOOL)))),
+                key=lambda j: j["startedAt"], reverse=True))
         jid, name = self.parse()
         if not jid:
             return self.err(404, "not found")

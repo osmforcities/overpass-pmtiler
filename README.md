@@ -102,6 +102,12 @@ python3 pmtiler.py --selftest  # converter + query-rewrite assertions
 python3 check.py               # end-to-end: one small-city job, then teardown
 ```
 
+To look at what a job produced, open the service root in a browser:
+`http://127.0.0.1:8099/` lists the spool, `?job=<id>` renders that job's archive
+on a MapLibre map coloured by the 4-band `_ts` age ramp, with its stats and
+output links. Same-origin, so the PMTiles client's range requests just work.
+`GET /jobs` (the list the index reads) is an addition to the contract above.
+
 `check.py` runs a real Delft `building=*` job (rel 324269, ~39.5k features)
 against a live Overpass and asserts the whole contract. It defaults to the
 osmforcities dev tunnel (`https://localhost:8080/api/interpreter`); override

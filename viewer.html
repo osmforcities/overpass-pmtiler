@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>pmtiler viewer</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
+<style>
+  html, body, #map { margin:0; height:100%; }
+  #hud { position:fixed; top:8px; left:8px; z-index:10; background:#fff;
+         font:12px/1.5 monospace; padding:8px 10px; border:1px solid #ccc;
+         max-width:32em; max-height:90vh; overflow:auto; }
+  #hud a { display:block; color:#06c; }
+  .band { display:inline-block; width:1.2em; height:.8em; margin-right:.3em; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="hud">loading…</div>
+<script>
+// Render harness for a baked job, derived from spike/tile-harness.html.
+// Served by pmtiler itself so the archive is same-origin (range requests).
+const hud = document.getElementById("hud");
+const jobId = new URLSearchParams(location.search).get("job");
+
+// app recency bands (dataset-recency.ts) + viridis knobs (map-style.ts)
+const BANDS = [["#414487", "<= 90d"], ["#2a788e", "90d-1y"],
+               ["#22a884", "1-2y"], ["#7ad151", "> 2y"]];
+const d = 86400;
+const now = Math.floor(Date.now() / 1000);
+const ageColor = ["step", ["-", now, ["get", "_ts"]],
+  BANDS[0][0], 90 * d, BANDS[1][0], 365 * d, BANDS[2][0], 730 * d, BANDS[3][0]];
+
+async function index() {
+  const jobs = await (await fetch("/jobs")).json();
+  hud.innerHTML = jobs.length
+    ? "<b>jobs</b>" + jobs.map(j =>
+        `<a href="?job=${encodeURIComponent(j.id)}">${j.id} — ${j.state}</a>`).join("")
+    : "no jobs in the spool yet — POST one to /jobs";
+}
+
+async function show() {
+  let job;
+  for (;;) {
+    job = await (await fetch("/jobs/" + encodeURIComponent(jobId))).json();
+    if (job.error && !job.state) { hud.textContent = job.error; return; }
+    if (job.state === "done" || job.state === "failed") break;
+    hud.textContent = `${jobId}: ${job.state}…`;
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  if (job.state === "failed") {
+    hud.innerHTML = `<b>${jobId} failed</b><br>` + job.error;
+    return;
+  }
+  const s = job.stats;
+  hud.innerHTML = `<b>${jobId}</b><br>` + [
+    `${s.features.toLocaleString()} features ` +
+      `(${s.ways.toLocaleString()} ways, ${s.nodes.toLocaleString()} nodes` +
+      (s.relationsSkipped ? `, ${s.relationsSkipped.toLocaleString()} relations skipped` : "") + ")",
+    `${s.editorsCount} editors, ${s.changesetsCount} changesets`,
+    `avg age ${s.averageElementAge}d, avg version ${s.averageElementVersion}`,
+    BANDS.map(([c, label], i) =>
+      `<span class="band" style="background:${c}"></span>${label}: ` +
+      s.editRecencyBands[i].toLocaleString()).join("<br>"),
+    `<a href="/jobs/${jobId}/output.pmtiles">output.pmtiles</a>`,
+    `<a href="/jobs/${jobId}/stats.json">stats.json</a>`,
+    `<a href="/jobs/${jobId}/data.ndjson">data.ndjson</a>`,
+  ].join("<br>");
+
+  maplibregl.addProtocol("pmtiles", new pmtiles.Protocol().tile);
+  const [w, so, e, n] = s.bbox;
+  const map = new maplibregl.Map({
+    container: "map",
+    style: {
+      version: 8,
+      sources: {
+        job: { type: "vector",
+               url: `pmtiles://${location.origin}/jobs/${jobId}/output.pmtiles` }
+      },
+      layers: [
+        { id: "bg", type: "background", paint: { "background-color": "#f8f8f6" } },
+        { id: "fill", type: "fill", source: "job", "source-layer": "features",
+          filter: ["==", ["geometry-type"], "Polygon"],
+          paint: { "fill-color": ageColor, "fill-opacity": 0.85 } },
+        { id: "outline", type: "line", source: "job", "source-layer": "features",
+          filter: ["==", ["geometry-type"], "Polygon"], minzoom: 13,
+          paint: { "line-color": "#fff", "line-width": 0.5, "line-opacity": 0.6 } },
+        { id: "lines", type: "line", source: "job", "source-layer": "features",
+          filter: ["==", ["geometry-type"], "LineString"],
+          paint: { "line-color": ageColor, "line-width": 1.5 } },
+        { id: "pts", type: "circle", source: "job", "source-layer": "features",
+          filter: ["==", ["geometry-type"], "Point"],
+          paint: { "circle-color": ageColor, "circle-radius": 3,
+                   "circle-stroke-color": "#fff", "circle-stroke-width": 1 } }
+      ]
+    },
+    bounds: [[w, so], [e, n]],
+    fitBoundsOptions: { padding: 20 }
+  });
+  window.map = map;
+  map.on("error", (ev) => {
+    hud.innerHTML += "<br><b>map error:</b> " + (ev.error && ev.error.message);
+    console.error(ev.error);
+  });
+  map.once("idle", () => { window.__rendered = true; });
+}
+
+(jobId ? show() : index()).catch(e => { hud.textContent = "" + e; });
+</script>
+</body>
+</html>
