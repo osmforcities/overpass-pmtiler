@@ -1,3 +1,6 @@
 *.pmtiles
 *.ndjson
 __pycache__/
+spool/
+.check-spool/
+.selftest/
