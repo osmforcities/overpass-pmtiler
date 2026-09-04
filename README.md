@@ -82,6 +82,36 @@ Useful stress datasets (any Overpass instance with area support):
 | large state | Sao Paulo (state) | 298204 | 2.71M buildings |
 | very large | Tokyo Metropolis | 1543125 | >3 GiB to even count |
 
+## Running it
+
+`pmtiler.py` is the whole service — Python 3 stdlib plus `tippecanoe` on PATH.
+Everything is configured by env var:
+
+```
+PMTILER_SPOOL         spool dir (default ./spool)
+PMTILER_OVERPASS      interpreter URL (default http://localhost/api/interpreter)
+PMTILER_BIND/_PORT    listen address (default 127.0.0.1:8099)
+PMTILER_INSECURE=1    skip TLS verification (dev tunnels with self-signed certs)
+PMTILER_NICE          nice level for the bake (default 10)
+PMTILER_MAX_AGE_DAYS  sweep jobs older than this (default 7)
+```
+
+```
+python3 pmtiler.py             # serve
+python3 pmtiler.py --selftest  # converter + query-rewrite assertions
+python3 check.py               # end-to-end: one small-city job, then teardown
+```
+
+`check.py` runs a real Delft `building=*` job (rel 324269, ~39.5k features)
+against a live Overpass and asserts the whole contract. It defaults to the
+osmforcities dev tunnel (`https://localhost:8080/api/interpreter`); override
+with `PMTILER_OVERPASS`.
+
+Current state (v0.1, #2/#3/#4/#5/#7): relations are counted and skipped (#6),
+and `stats.json` omits `geometryMix` — it needs geodesic length/area, which is
+not accumulator-cheap. The stale-job sweep runs at startup and after each job
+rather than on a timer; an idle service never sweeps.
+
 ## Deploy
 
 A single Python service plus tippecanoe (apt). Run under systemd; front
