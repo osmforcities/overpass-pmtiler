@@ -13,6 +13,11 @@
          max-width:32em; max-height:90vh; overflow:auto; }
   #hud a { display:block; color:#06c; }
   #hud a.back { margin-bottom:.5em; }
+  #hud b { display:block; margin:.6em 0 .3em; }
+  #hud input, #hud textarea, #hud button { font:inherit; width:100%;
+    box-sizing:border-box; margin-bottom:.3em; }
+  #hud label { display:flex; gap:.4em; align-items:center; }
+  #formerr { color:#c00; }
   .band { display:inline-block; width:1.2em; height:.8em; margin-right:.3em; }
 </style>
 </head>
@@ -45,14 +50,52 @@ function progressText(p) {
   return "";
 }
 
-async function index() {
+// Skeleton is rendered once so the form keeps focus and typed text while the
+// job list refreshes underneath it.
+const INDEX_HTML = `
+  <b>pmtiler jobs</b>
+  <div id="list">loading…</div>
+  <form id="new">
+    <b>new job</b>
+    <input id="jid" placeholder="job id" required
+           pattern="[A-Za-z0-9._-]{1,128}">
+    <textarea id="query" rows="4" required></textarea>
+    <label>timeout <input id="timeout" type="number" value="300"></label>
+    <label>maxsize <input id="maxsize" type="number" value="805306368"></label>
+    <button>submit</button>
+    <span id="formerr"></span>
+  </form>`;
+
+const EXAMPLE = '[out:json];area(3600324269)->.a;way["building"](area.a);out geom meta;';
+
+async function refreshList() {
   const jobs = await (await fetch("/jobs")).json();
-  hud.innerHTML = jobs.length
-    ? "<b>pmtiler jobs</b>" + jobs.map(j =>
+  document.getElementById("list").innerHTML = jobs.length
+    ? jobs.map(j =>
         `<a href="?job=${encodeURIComponent(j.id)}">${j.id} — ${j.state}` +
         `${progressText(j.progress)}</a>`).join("")
-    : "no jobs in the spool yet — POST one to /jobs";
-  setTimeout(index, 2000);
+    : "<i>none yet</i>";
+  setTimeout(refreshList, 2000);
+}
+
+async function index() {
+  hud.innerHTML = INDEX_HTML;
+  document.getElementById("query").value = EXAMPLE;
+  document.getElementById("new").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const id = document.getElementById("jid").value.trim();
+    const body = {
+      id,
+      query: document.getElementById("query").value,
+      timeout: +document.getElementById("timeout").value || undefined,
+      maxsize: +document.getElementById("maxsize").value || undefined,
+    };
+    const res = await fetch("/jobs", {method: "POST", body: JSON.stringify(body)});
+    const out = await res.json();
+    if (!res.ok) { document.getElementById("formerr").textContent = out.error; return; }
+    location.search = "?job=" + encodeURIComponent(id);  // 202 new or 200 existing
+  };
+  refreshList();
 }
 
 async function show() {
@@ -84,7 +127,14 @@ async function show() {
     `<a href="/jobs/${jobId}/output.pmtiles">output.pmtiles</a>`,
     `<a href="/jobs/${jobId}/stats.json">stats.json</a>`,
     `<a href="/jobs/${jobId}/data.ndjson">data.ndjson</a>`,
+    `<a href="#" id="del">delete job</a>`,
   ].join("<br>");
+  document.getElementById("del").onclick = async (ev) => {
+    ev.preventDefault();
+    if (!confirm(`Delete ${jobId} and its outputs?`)) return;
+    await fetch("/jobs/" + encodeURIComponent(jobId), {method: "DELETE"});
+    location.href = "/";
+  };
 
   maplibregl.addProtocol("pmtiles", new pmtiles.Protocol().tile);
   const [w, so, e, n] = s.bbox;

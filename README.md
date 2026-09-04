@@ -102,11 +102,17 @@ python3 pmtiler.py --selftest  # converter + query-rewrite assertions
 python3 check.py               # end-to-end: one small-city job, then teardown
 ```
 
-To look at what a job produced, open the service root in a browser:
-`http://127.0.0.1:8099/` lists the spool, `?job=<id>` renders that job's archive
-on a MapLibre map coloured by the 4-band `_ts` age ramp, with its stats and
-output links. Same-origin, so the PMTiles client's range requests just work.
+Open the service root in a browser to drive it without curl:
+`http://127.0.0.1:8099/` lists the spool and has a submit form; `?job=<id>`
+follows that job's progress and then renders its archive on a MapLibre map
+coloured by the 4-band `_ts` age ramp, with stats, output links and a delete
+button. Same-origin, so the PMTiles client's range requests just work.
 `GET /jobs` (the list the index reads) is an addition to the contract above.
+
+It is deliberately one dependency-free HTML file with two CDN scripts, not a
+bundled app -- there is no build step to run before serving it, and nothing to
+rebuild on deploy. Reach for a bundler only if the preview grows past a couple
+of views or has to serve its assets locally.
 
 `check.py` runs a real Delft `building=*` job (rel 324269, ~39.5k features)
 against a live Overpass and asserts the whole contract. It defaults to the
