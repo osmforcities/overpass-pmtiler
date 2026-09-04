@@ -18,6 +18,12 @@
     box-sizing:border-box; margin-bottom:.3em; }
   #hud label { display:flex; gap:.4em; align-items:center; }
   #formerr { color:#c00; }
+  .stage { color:#999; }
+  .stage.on { color:#000; font-weight:bold; }
+  .stage.done { color:#555; }
+  .stage.done progress { opacity:.45; }
+  .stage progress { display:block; width:100%; height:.6em; margin:.2em 0 .4em; }
+  button.city { text-align:left; }
   .band { display:inline-block; width:1.2em; height:.8em; margin-right:.3em; }
 </style>
 </head>
@@ -41,6 +47,7 @@ const ageColor = ["step", ["-", now, ["get", "_ts"]],
 // A running stage reports what it can: bytes (fetch gets no Content-Length from
 // Overpass), features so far, or a true percentage from tippecanoe.
 const BACK = '<a class="back" href="/">&larr; all jobs</a>';
+const STAGES = ["queued", "fetching", "converting", "baking"];
 
 function progressText(p) {
   if (!p) return "";
@@ -55,8 +62,10 @@ function progressText(p) {
 const INDEX_HTML = `
   <b>pmtiler jobs</b>
   <div id="list">loading…</div>
+  <b>canonical cities</b>
+  <div id="cities"></div>
   <form id="new">
-    <b>new job</b>
+    <b>custom job</b>
     <input id="jid" placeholder="job id" required
            pattern="[A-Za-z0-9._-]{1,128}">
     <textarea id="query" rows="4" required></textarea>
@@ -66,7 +75,36 @@ const INDEX_HTML = `
     <span id="formerr"></span>
   </form>`;
 
-const EXAMPLE = '[out:json];area(3600324269)->.a;way["building"](area.a);out geom meta;';
+// Canonical test set. The first three are measured end to end; SP state is the
+// next size up; Tokyo is the ceiling case and is expected to fail -- keep it in
+// the list, refusing it gracefully is a requirement, not an accident.
+const CITIES = [
+  {id: "delft-buildings", label: "Delft (39.6k) ~25s",
+   rel: 324269, maxsize: 536870912, timeout: 300},
+  {id: "ams-buildings", label: "Amsterdam (197k) ~1min",
+   rel: 271110, maxsize: 805306368, timeout: 300},
+  {id: "sp-buildings", label: "Sao Paulo city (2.14M) ~10min",
+   rel: 298285, maxsize: 805306368, timeout: 900},
+  {id: "sp-state-buildings", label: "Sao Paulo state (2.71M)",
+   rel: 298204, maxsize: 1073741824, timeout: 1800},
+  {id: "tokyo-buildings", label: "Tokyo Metropolis (>3GiB, expected to fail)",
+   rel: 1543125, maxsize: 1073741824, timeout: 1800},
+];
+
+const query = (rel) =>
+  `[out:json];area(${3600000000 + rel})->.a;way["building"](area.a);out geom meta;`;
+
+const EXAMPLE = query(CITIES[0].rel);
+
+async function submit(body) {
+  const res = await fetch("/jobs", {method: "POST", body: JSON.stringify(body)});
+  const out = await res.json();
+  if (!res.ok) {
+    document.getElementById("formerr").textContent = `${body.id}: ${out.error}`;
+    return;
+  }
+  location.search = "?job=" + encodeURIComponent(body.id);  // 202 new, 200 existing
+}
 
 async function refreshList() {
   const jobs = await (await fetch("/jobs")).json();
@@ -81,19 +119,26 @@ async function refreshList() {
 async function index() {
   hud.innerHTML = INDEX_HTML;
   document.getElementById("query").value = EXAMPLE;
-  document.getElementById("new").onsubmit = async (ev) => {
+
+  const cities = document.getElementById("cities");
+  cities.innerHTML = CITIES.map((c, i) =>
+    `<button class="city" data-i="${i}">${c.label}</button>`).join("");
+  cities.onclick = (ev) => {
+    const b = ev.target.closest("button.city");
+    if (!b) return;
+    const c = CITIES[b.dataset.i];
+    // POST is idempotent, so clicking one that already ran just opens it
+    submit({id: c.id, query: query(c.rel), timeout: c.timeout, maxsize: c.maxsize});
+  };
+
+  document.getElementById("new").onsubmit = (ev) => {
     ev.preventDefault();
-    const id = document.getElementById("jid").value.trim();
-    const body = {
-      id,
+    submit({
+      id: document.getElementById("jid").value.trim(),
       query: document.getElementById("query").value,
       timeout: +document.getElementById("timeout").value || undefined,
       maxsize: +document.getElementById("maxsize").value || undefined,
-    };
-    const res = await fetch("/jobs", {method: "POST", body: JSON.stringify(body)});
-    const out = await res.json();
-    if (!res.ok) { document.getElementById("formerr").textContent = out.error; return; }
-    location.search = "?job=" + encodeURIComponent(id);  // 202 new or 200 existing
+    });
   };
   refreshList();
 }
@@ -104,10 +149,22 @@ async function show() {
     job = await (await fetch("/jobs/" + encodeURIComponent(jobId))).json();
     if (job.error && !job.state) { hud.textContent = job.error; return; }
     if (job.state === "done" || job.state === "failed") break;
-    const bar = job.progress && job.progress.pct !== undefined
-      ? `<br><progress value="${job.progress.pct}" max="100"></progress>` : "";
-    hud.innerHTML =
-      `${BACK}<b>${jobId}</b><br>${job.state}${progressText(job.progress)}${bar}`;
+    // A stage the job has moved past is complete, whatever its last sample said:
+    // progress is throttled to 1/s so the final in-stage reading is always stale,
+    // and convert's last tick lands before the trailing input is consumed. Trust
+    // the state machine for completion, the percentage only for the live stage.
+    const cur = STAGES.indexOf(job.state);
+    const pct = job.progress && job.progress.pct;
+    hud.innerHTML = `${BACK}<b>${jobId}</b>` + STAGES.map((s, i) => {
+      if (i > cur) return `<div class="stage">${s}</div>`;
+      if (i < cur) return `<div class="stage done">${s}` +
+        `<progress value="100" max="100"></progress></div>`;
+      // fetch has no denominator (Overpass answers chunked), so its bar stays
+      // indeterminate rather than showing a made-up percentage
+      const bar = pct !== undefined && pct !== null
+        ? `<progress value="${pct}" max="100"></progress>` : `<progress></progress>`;
+      return `<div class="stage on">${s}${progressText(job.progress)}${bar}</div>`;
+    }).join("");
     await new Promise(r => setTimeout(r, 2000));
   }
   if (job.state === "failed") {

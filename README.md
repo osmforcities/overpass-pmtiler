@@ -74,13 +74,23 @@ Sao Paulo `building=*` (relation 298285, 2.14M elements), end to end
 - Plan ~3 GB transient disk per metro-scale job (raw JSON + nd-geojson) on
   top of the archive.
 
-Useful stress datasets (any Overpass instance with area support):
+Canonical test set (any Overpass instance with area support). These are the
+one-click buttons in the preview and the list in `viewer.html`:
 
-| case | area | relation | size |
-| --- | --- | --- | --- |
-| standard metro | Sao Paulo (municipality) | 298285 | 2.14M buildings |
-| large state | Sao Paulo (state) | 298204 | 2.71M buildings |
-| very large | Tokyo Metropolis | 1543125 | >3 GiB to even count |
+| case | area | relation | size | measured |
+| --- | --- | --- | --- | --- |
+| small | Delft | 324269 | 39.6k buildings | 25s, 3.8 MB archive |
+| mid | Amsterdam | 271110 | 197k buildings | ~1 min, 197,153 features |
+| standard metro | Sao Paulo (municipality) | 298285 | 2.14M buildings | 9m30s, 53.3 MB |
+| large state | Sao Paulo (state) | 298204 | 2.71M buildings | not yet run |
+| ceiling | Tokyo Metropolis | 1543125 | >3 GiB to even count | expected to fail |
+
+Tokyo stays in the list on purpose: refusing it gracefully is a requirement,
+so the ceiling case needs to be as easy to run as the happy ones.
+
+The Sao Paulo row was reproduced end to end on a laptop over an SSH tunnel
+(2026-09), landing within 5% of the server-side reference above at every stage
+— the pipeline is not sensitive to where it runs.
 
 ## Running it
 
