@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Oracle compare: pmtiler convert() vs osmtogeojson on a captured fixture.
 
-    python3 spike/oracle_compare.py fixtures/delft-parks.json
+    python3 oracle_compare.py fixtures/delft-mixed.json
 
 Runs the fixture through both converters and diffs feature counts by element
 type, then relation geometries (type, ring count, vertex set -- rotation and
@@ -14,14 +14,13 @@ import os
 import subprocess
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, ".."))
-import pmtiler  # noqa: E402
+import pmtiler
 
 CAP = 20  # printed mismatches per kind; a systematic divergence is 100k+ lines
 # the app checkout supplies osmtogeojson; the default only holds for a sibling
 # layout, so worktrees and other checkouts point PMTILER_APP_DIR at it instead
-APP = os.environ.get("PMTILER_APP_DIR") or os.path.join(HERE, "..", "..", "app")
+HERE = os.path.dirname(os.path.abspath(__file__))
+APP = os.environ.get("PMTILER_APP_DIR") or os.path.join(HERE, "..", "app")
 
 
 def polys(geom):
