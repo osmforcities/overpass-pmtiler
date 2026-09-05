@@ -1,6 +1,10 @@
-# Test CI: the converter selftest needs zero setup (stdlib only) and pins the
-# service's behaviour contract -- osmtogeojson/turf parity, the stats
-# accumulator, query rewriting. Before this, nothing ran it automatically.
+# Test CI: the contract checks that run with zero setup.
+#
+# --selftest pins the converter's behaviour (osmtogeojson/turf parity, stats
+# accumulator); check.py --offline drives the whole HTTP job contract against
+# an in-process stub Overpass seeded from the selftest fixture -- no network,
+# no live Overpass, just tippecanoe from apt. The live-tunnel mode of check.py
+# stays a manual pre-deploy check.
 name: check
 
 on:
@@ -14,3 +18,5 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 pmtiler.py --selftest
+      - run: sudo apt-get update && sudo apt-get install -y tippecanoe
+      - run: python3 check.py --offline
