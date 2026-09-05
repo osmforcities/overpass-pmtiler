@@ -4,4 +4,5 @@ __pycache__/
 spool/
 .check-spool/
 .selftest/
-fixtures/
+fixtures/*
+!fixtures/*.overpassql
