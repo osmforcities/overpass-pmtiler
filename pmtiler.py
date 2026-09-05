@@ -1180,6 +1180,12 @@ def selftest():
         assert is_area({"barrier": "hedge"})
         assert not is_area({"barrier": "fence"})
         assert not is_area({"aeroway": "taxiway"})     # 1-value blacklist, not chars
+        # the val == "no" skip is universal, not just for polygon:all keys --
+        # osmtogeojson index.js:1001 sits above the mode dispatch at 1004/1006/
+        # 1008. Verified against the library: natural=no and aeroway=no both come
+        # back LineString, natural=water Polygon. Do not "fix" these to True.
+        assert not is_area({"natural": "no"})
+        assert not is_area({"aeroway": "no"})
         assert is_area({"aeroway": "apron"})           # blacklist admits everything else
         assert not is_area({})
         assert not is_area({"name": "nowhere"})        # unknown key
