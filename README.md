@@ -163,6 +163,8 @@ Example unit and nginx snippet: #8.
 
 ## Spike code
 
-`spike/` holds the probe scripts and render harness this design came from
-(2026-09). The baked `sp-buildings.pmtiles` (53 MB) is deliberately not in
-git — regenerate with `spike/convert_fast.py` + tippecanoe.
+`spike/` is where this design came from (2026-09). The probe scripts and the
+render harness are pruned — findings live in this README and
+osmforcities/osmforcities#322, code in git history. What remains is the
+parity oracle and the captured fixtures it runs on (see `spike/README.md`);
+the bake flags for a full-city archive are in the reference table above.
