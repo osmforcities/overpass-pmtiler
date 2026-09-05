@@ -51,6 +51,42 @@ BANDS = (90 * DAY, 365 * DAY, 730 * DAY)  # app dataset-recency.ts cutoffs
 EARTH_R = 6371008.8  # turf's sphere radius: geometryMix must match app stats
 MAX_FILTER_KEYS = 32
 
+# osm-polygon-features 0.9.2, vendored (27 rules, no dependency): which tags make
+# a closed way an area. key -> True (any value) | ("in"|"ex", frozenset(values)).
+# ponytail: frozen snapshot -- nothing detects upstream drift. Regenerate
+# from the package JSON when the oracle reports type mismatches it did not
+# report before.
+POLYGON_FEATURES = {
+    "building": True,
+    "highway": ("in", frozenset({"services", "rest_area", "escape", "elevator"})),
+    "natural": ("ex", frozenset({"coastline", "cliff", "ridge", "arete", "tree_row"})),
+    "landuse": True,
+    "waterway": ("in", frozenset({"riverbank", "dock", "boatyard", "dam"})),
+    "amenity": True,
+    "leisure": True,
+    "barrier": ("in", frozenset({"city_wall", "ditch", "hedge", "retaining_wall",
+                                 "wall", "spikes"})),
+    "railway": ("in", frozenset({"station", "turntable", "roundhouse", "platform"})),
+    "area": True,
+    "boundary": True,
+    "man_made": ("ex", frozenset({"cutline", "embankment", "pipeline"})),
+    "power": ("in", frozenset({"plant", "substation", "generator", "transformer"})),
+    "place": True,
+    "shop": True,
+    "aeroway": ("ex", frozenset({"taxiway"})),
+    "tourism": True,
+    "historic": True,
+    "public_transport": True,
+    "office": True,
+    "building:part": True,
+    "military": True,
+    "ruins": True,
+    "area:highway": True,
+    "craft": True,
+    "golf": True,
+    "indoor": True,
+}
+
 Q = queue.Queue()
 CREATE_LOCK = threading.Lock()
 
@@ -225,6 +261,27 @@ def stage_fetch(job, path):
 
 
 # --- convert ---------------------------------------------------------------
+
+def is_area(tags):
+    """Do these tags make a closed way an area? osmtogeojson's _isPolygonFeature,
+    mirrored -- the purely geometric test fills roundabouts and closed cycleway
+    loops, diverging from what consumers migrating off client-side conversion
+    already render. The key "area" is itself a polygon-features key, so area=yes
+    falls out of the generic loop below; only area=no needs a special case.
+    """
+    if tags.get("area") == "no":
+        return False
+    for key, val in tags.items():
+        rule = POLYGON_FEATURES.get(key)
+        if rule is None or val == "no":  # building=no is not an area
+            continue
+        if rule is True:
+            return True
+        mode, values = rule
+        if (val in values) if mode == "in" else (val not in values):
+            return True
+    return False
+
 
 def ring_contains(ring, pt):
     """Ray cast: point inside closed ring? Boundary hits are either/or, which is
@@ -433,10 +490,15 @@ def convert(inp, outp, tick=None, filter_keys=()):
                 continue
 
             kind = el.get("type")
+            tags = el.get("tags") or {}
             member_nodes = ()
             if kind == "way" and el.get("geometry"):
                 coords = [[p["lon"], p["lat"]] for p in el["geometry"]]
-                closed = len(coords) > 3 and coords[0] == coords[-1]
+                # ponytail: closure by coordinate, not node id as osmtogeojson
+                # does -- out geom carries no ids. Degenerate 3-coord rings stay
+                # LineStrings here; the >3 guard also protects the ring math.
+                closed = (len(coords) > 3 and coords[0] == coords[-1]
+                          and is_area(tags))
                 geometry = ({"type": "Polygon", "coordinates": [coords]} if closed
                             else {"type": "LineString", "coordinates": coords})
                 counts["ways"] += 1
@@ -508,7 +570,6 @@ def convert(inp, outp, tick=None, filter_keys=()):
                 if user and ts > mapper_latest.get(user, 0):
                     mapper_latest[user] = ts
 
-            tags = el.get("tags") or {}
             for key in tags:
                 tag_counts[key] = tag_counts.get(key, 0) + 1
 
@@ -1099,6 +1160,37 @@ def selftest():
         assert (mix["points"], mix["lines"], mix["areas"]) == (2, 1, 4), mix
         assert abs(mix["lineKm"] - 157.17776891752186) < 1e-6, mix
         assert abs(mix["areaKm2"] - 22365.44322391079) < 1e-3, mix
+        # tag-first area decision (osmtogeojson parity), every ruleset branch
+        assert is_area({"building": "yes"})            # polygon: all
+        assert not is_area({"highway": "cycleway"})    # not in the highway whitelist
+        assert is_area({"highway": "services"})        # in it
+        assert is_area({"highway": "cycleway", "area": "yes"})   # area is polygon: all
+        assert not is_area({"building": "yes", "area": "no"})    # area=no wins
+        assert not is_area({"building": "no"})         # explicitly un-set
+        assert not is_area({"natural": "coastline"})   # natural blacklist
+        assert is_area({"natural": "water"})           # not blacklisted
+        assert is_area({"barrier": "hedge"})
+        assert not is_area({"barrier": "fence"})
+        assert not is_area({"aeroway": "taxiway"})     # 1-value blacklist, not chars
+        assert is_area({"aeroway": "apron"})           # blacklist admits everything else
+        assert not is_area({})
+        assert not is_area({"name": "nowhere"})        # unknown key
+
+        # and that convert() actually consults it: three closed rings, one shape
+        src2, dst2 = os.path.join(d, "areas.json"), os.path.join(d, "areas.ndjson")
+        ring = ('[{"lat":0,"lon":0},{"lat":0,"lon":1},'
+                '{"lat":1,"lon":1},{"lat":0,"lon":0}]')
+        with open(src2, "w", encoding="utf-8") as f:
+            f.write('{\n  "elements": [\n' + ",\n".join(
+                '{"type":"way","id":%d,"geometry":%s,"tags":%s}' % (i, ring, t)
+                for i, t in enumerate((
+                    '{"building":"yes"}',
+                    '{"highway":"cycleway"}',
+                    '{"highway":"cycleway","area":"yes"}'))) + "\n  ]\n}\n")
+        convert(src2, dst2)
+        with open(dst2, encoding="utf-8") as f:
+            kinds = [json.loads(line)["geometry"]["type"] for line in f]
+        assert kinds == ["Polygon", "LineString", "Polygon"], kinds
 
         # --json-progress emits one object per tick; anything else is error text
         assert PROGRESS_RE.match('{"progress":33.5}').group(1) == "33.5"

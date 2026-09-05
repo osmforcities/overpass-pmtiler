@@ -138,7 +138,10 @@ against a live Overpass and asserts the whole contract. It defaults to the
 osmforcities dev tunnel (`https://localhost:8080/api/interpreter`); override
 with `PMTILER_OVERPASS`.
 
-Current state (v0.1, #2/#3/#4/#5/#6/#7): `type=multipolygon`/`boundary`
+Current state (v0.1, #2/#3/#4/#5/#6/#7/#12): a closed way becomes a Polygon
+only if its tags say so, via the vendored osm-polygon-features ruleset (#12)
+— a closed `highway=cycleway` loop stays a LineString unless it carries
+`area=yes`, matching osmtogeojson. `type=multipolygon`/`boundary`
 relations are assembled into Polygon/MultiPolygon (#6); other relation types
 (`route` etc., see #13) and unassemblable ones stay counted in
 `relationsSkipped`. An assembled relation's node members (label,

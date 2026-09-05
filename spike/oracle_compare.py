@@ -18,7 +18,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 import pmtiler  # noqa: E402
 
-APP = os.path.join(HERE, "..", "..", "app")
+CAP = 20  # printed mismatches per kind; a systematic divergence is 100k+ lines
+# the app checkout supplies osmtogeojson; the default only holds for a sibling
+# layout, so worktrees and other checkouts point PMTILER_APP_DIR at it instead
+APP = os.environ.get("PMTILER_APP_DIR") or os.path.join(HERE, "..", "..", "app")
 
 
 def polys(geom):
@@ -73,20 +76,30 @@ def main(fix):
     if only_ours:
         print("only in ours:", only_ours[:20])
 
-    geom_bad = []
-    for k in sorted(k for k in ours if k.startswith("relation/")):
-        if k not in theirs:
-            continue
-        if sig(ours[k]) != sig(theirs[k]):
+    # ways get a type-only check -- Polygon vs LineString is the whole point of the
+    # tag-based area decision, and coordinates for a way are a straight copy of the
+    # geometry Overpass sent. Relations additionally get the ring signature.
+    type_bad, geom_bad, shared = [], [], 0
+    for k in sorted(k for k in ours if k in theirs):
+        shared += 1
+        a, b = ours[k], theirs[k]
+        if a["type"] != b["type"]:
+            type_bad.append(k)
+            if len(type_bad) <= CAP:
+                print("type MISMATCH %s: ours %s, oracle %s"
+                      % (k, a["type"], b["type"]))
+        elif k.startswith("relation/") and sig(a) != sig(b):
             geom_bad.append(k)
-            a, b = ours[k], theirs[k]
-            print("geometry MISMATCH %s: ours %s %d polys, oracle %s %d polys"
-                  % (k, a["type"], len(polys(a)), b["type"], len(polys(b))))
-    if geom_bad:
+            if len(geom_bad) <= CAP:
+                print("geometry MISMATCH %s: ours %s %d polys, oracle %s %d polys"
+                      % (k, a["type"], len(polys(a)), b["type"],
+                         len(polys(b))))
+    if type_bad or geom_bad:
         fail = 1
+        print("%d type, %d ring mismatches of %d shared features"
+              % (len(type_bad), len(geom_bad), shared))
     else:
-        rels = sum(1 for k in ours if k.startswith("relation/"))
-        print("relation geometries match (%d compared)" % rels)
+        print("geometry types and relation rings match (%d compared)" % shared)
     print("relationsSkipped=%d skipped=%d" % (stats["relationsSkipped"],
                                               stats["skipped"]))
     return fail
