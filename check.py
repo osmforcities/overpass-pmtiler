@@ -162,6 +162,8 @@ def main():
         # --- outputs
         status, _, sj = call(base, "GET", "/jobs/%s/stats.json" % JOB["id"])
         assert status == 200 and json.loads(sj)["features"] == stats["features"]
+        # the served file is the cross-repo surface the app consumer will pin
+        assert json.loads(sj)["schemaVersion"] == 1, sj[:200]
 
         status, _, nd = call(base, "GET", "/jobs/%s/data.ndjson" % JOB["id"])
         assert status == 200, status
