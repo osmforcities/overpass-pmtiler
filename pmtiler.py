@@ -223,6 +223,107 @@ def stage_fetch(job, path):
 
 # --- convert ---------------------------------------------------------------
 
+def ring_contains(ring, pt):
+    """Ray cast: point inside closed ring? Boundary hits are either/or, which is
+    fine for assigning inner rings -- they sit strictly inside their outer."""
+    x, y = pt
+    inside = False
+    for i in range(len(ring) - 1):
+        x1, y1 = ring[i]
+        x2, y2 = ring[i + 1]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
+
+
+def stitch(segments):
+    """Join way fragments into closed rings.
+
+    Fragments arrive in arbitrary order and direction, so grow each ring by
+    endpoint lookup, reversing segments as needed. Fragments that never close
+    are dropped -- broken relations are routine in real OSM data.
+    """
+    rings, opens = [], []
+    for s in segments:
+        if len(s) >= 4 and s[0] == s[-1]:
+            rings.append(s)
+        elif len(s) >= 2:
+            opens.append(s)
+    ends = {}
+    for i, s in enumerate(opens):
+        ends.setdefault(tuple(s[0]), []).append(i)
+        ends.setdefault(tuple(s[-1]), []).append(i)
+    used = [False] * len(opens)
+    for i, seg in enumerate(opens):
+        if used[i]:
+            continue
+        used[i] = True
+        ring = list(seg)
+        while ring[0] != ring[-1]:
+            # ponytail: greedy pick when 3+ fragments meet at one endpoint --
+            # touching rings can mis-stitch. Backtracking join if fixtures hit it.
+            j = next((k for k in ends.get(tuple(ring[-1]), []) if not used[k]), None)
+            if j is None:
+                break
+            used[j] = True
+            nxt = opens[j]
+            ring.extend(nxt[1:] if nxt[0] == ring[-1] else reversed(nxt[:-1]))
+        if len(ring) >= 4 and ring[0] == ring[-1]:
+            rings.append(ring)
+    return rings
+
+
+def assemble_relation(el):
+    """type=multipolygon/boundary -> (geometry, flat_coords, member_nodes);
+    any other type or an unassemblable relation -> None (callers count it;
+    never crash a bake). The blanket except below also turns coding bugs into
+    relationsSkipped -- spike/oracle_compare.py is the detector for that.
+
+    Members carry inline geometry under `out geom`, so the element is
+    self-contained. Member ways are consumed for ring assembly only, never
+    emitted -- a way appears top-level iff it matched the query itself.
+    Member nodes (label, admin_centre) come back as (id, lon, lat) and ARE
+    emitted as bare Points: osmtogeojson does the same, and count parity with
+    the app's client-side path is the contract. Known freak divergence: a
+    member node that also matched the query top-level emits twice here where
+    osmtogeojson dedups by id -- streaming cannot know without holding every
+    node id seen.
+    """
+    try:
+        if (el.get("tags") or {}).get("type") not in ("multipolygon", "boundary"):
+            return None
+        outers, inners, member_nodes = [], [], []
+        for m in el.get("members") or []:
+            if m.get("type") == "node" and "lat" in m:
+                member_nodes.append((m.get("ref"), m["lon"], m["lat"]))
+                continue
+            if m.get("type") != "way" or not m.get("geometry"):
+                continue
+            coords = [[p["lon"], p["lat"]] for p in m["geometry"]]
+            role = m.get("role") or "outer"
+            if role == "outer":
+                outers.append(coords)
+            elif role == "inner":
+                inners.append(coords)
+        polys = [[o] for o in stitch(outers)]
+        if not polys:
+            return None
+        for ring in stitch(inners):  # inner with no containing outer: dropped
+            # ponytail: first containing outer wins -- nested outers (island in
+            # lake in island) can misassign the hole. Smallest-containing if hit.
+            for poly in polys:
+                if ring_contains(poly[0], ring[0]):
+                    poly.append(ring)
+                    break
+        geometry = ({"type": "Polygon", "coordinates": polys[0]} if len(polys) == 1
+                    else {"type": "MultiPolygon", "coordinates": polys})
+        flat = [pt for poly in polys for ring in poly for pt in ring]
+        flat += [[lon, lat] for _, lon, lat in member_nodes]
+        return geometry, flat, member_nodes
+    except Exception:
+        return None
+
+
 def convert(inp, outp, tick=None):
     """Overpass JSON -> nd-geojson + accumulator stats in one bounded-memory pass.
 
@@ -234,7 +335,8 @@ def convert(inp, outp, tick=None):
     now = int(time.time())
     total = os.path.getsize(inp)  # the input is complete here, so pct is honest
     read = 0
-    counts = {"nodes": 0, "ways": 0, "relationsSkipped": 0, "skipped": 0}
+    counts = {"nodes": 0, "ways": 0, "relations": 0,
+              "relationsSkipped": 0, "skipped": 0}
     editors, changesets = set(), set()
     recent_editors, recent_changesets = set(), set()
     mapper_latest, tag_counts = {}, {}
@@ -279,6 +381,7 @@ def convert(inp, outp, tick=None):
                 continue
 
             kind = el.get("type")
+            member_nodes = ()
             if kind == "way" and el.get("geometry"):
                 coords = [[p["lon"], p["lat"]] for p in el["geometry"]]
                 closed = len(coords) > 3 and coords[0] == coords[-1]
@@ -289,9 +392,15 @@ def convert(inp, outp, tick=None):
                 coords = [[el["lon"], el["lat"]]]
                 geometry = {"type": "Point", "coordinates": coords[0]}
                 counts["nodes"] += 1
+            elif kind == "relation":
+                assembled = assemble_relation(el)
+                if not assembled:
+                    counts["relationsSkipped"] += 1
+                    continue
+                geometry, coords, member_nodes = assembled
+                counts["relations"] += 1
             else:
-                # relations/multipolygons are issue #6
-                counts["relationsSkipped" if kind == "relation" else "skipped"] += 1
+                counts["skipped"] += 1
                 continue
 
             for lon, lat in coords:
@@ -345,11 +454,18 @@ def convert(inp, outp, tick=None):
             out.write(json.dumps({"type": "Feature", "properties": props,
                                   "geometry": geometry},
                                  separators=(",", ":")) + "\n")
+            for ref, lon, lat in member_nodes:  # bare Points, osmtogeojson parity
+                counts["nodes"] += 1
+                out.write(json.dumps(
+                    {"type": "Feature",
+                     "properties": {"@id": "node/%s" % ref, "_ts": 0},
+                     "geometry": {"type": "Point", "coordinates": [lon, lat]}},
+                    separators=(",", ":")) + "\n")
             if tick:
-                tick(features=counts["nodes"] + counts["ways"], bytes=read,
-                     total=total, pct=round(100.0 * read / total, 1))
+                tick(features=counts["nodes"] + counts["ways"] + counts["relations"],
+                     bytes=read, total=total, pct=round(100.0 * read / total, 1))
 
-    features = counts["nodes"] + counts["ways"]
+    features = counts["nodes"] + counts["ways"] + counts["relations"]
     mapper_bands = [0, 0, 0, 0]
     for ts in mapper_latest.values():
         mapper_bands[sum((now - ts) > b for b in BANDS)] += 1
@@ -376,7 +492,7 @@ def convert(inp, outp, tick=None):
         "tagCounts": [{"key": k, "count": c} for k, c in
                       sorted(tag_counts.items(), key=lambda kv: -kv[1])],
         # ponytail: no geometryMix -- needs geodesic length/area, not accumulator
-        # -cheap. Add alongside relation assembly (#6) when the app consumes it.
+        # -cheap. Add when the app consumes it.
         "bbox": bbox if features else None,
         "seconds": round(time.time() - t0, 1),
         "peakRssMB": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // (1024 * 1024),
@@ -689,7 +805,124 @@ FIXTURE = '''{
 },
 { "type": "node", "id": 3, "lat": -1.0, "lon": -1.0, "version": 2,
   "changeset": 11, "user": "ada", "timestamp": "2026-08-02T00:00:00Z" },
-{ "type": "relation", "id": 4, "members": [], "tags": { "building": "yes" } }
+{ "type": "relation", "id": 4, "members": [], "tags": { "building": "yes" } },
+{
+  "type": "relation",
+  "id": 5,
+  "timestamp": "2026-08-03T00:00:00Z",
+  "version": 2,
+  "changeset": 13,
+  "user": "ada",
+  "members": [
+    {
+      "type": "way",
+      "ref": 10,
+      "role": "outer",
+      "geometry": [
+        { "lat": 10.0, "lon": 20.0 },
+        { "lat": 10.0, "lon": 21.0 },
+        { "lat": 11.0, "lon": 21.0 }
+      ]
+    },
+    {
+      "type": "way",
+      "ref": 11,
+      "role": "outer",
+      "geometry": [
+        { "lat": 10.0, "lon": 20.0 },
+        { "lat": 11.0, "lon": 20.0 },
+        { "lat": 11.0, "lon": 21.0 }
+      ]
+    },
+    {
+      "type": "way",
+      "ref": 12,
+      "role": "inner",
+      "geometry": [
+        { "lat": 10.4, "lon": 20.4 },
+        { "lat": 10.4, "lon": 20.6 },
+        { "lat": 10.6, "lon": 20.6 },
+        { "lat": 10.6, "lon": 20.4 },
+        { "lat": 10.4, "lon": 20.4 }
+      ]
+    },
+    { "type": "node", "ref": 99, "role": "label", "lat": 10.5, "lon": 20.5 }
+  ],
+  "tags": { "type": "multipolygon", "leisure": "park" }
+},
+{
+  "type": "relation",
+  "id": 6,
+  "members": [
+    {
+      "type": "way",
+      "ref": 13,
+      "role": "outer",
+      "geometry": [
+        { "lat": 12.0, "lon": 22.0 },
+        { "lat": 12.0, "lon": 22.5 },
+        { "lat": 12.5, "lon": 22.5 },
+        { "lat": 12.0, "lon": 22.0 }
+      ]
+    },
+    {
+      "type": "way",
+      "ref": 14,
+      "role": "outer",
+      "geometry": [
+        { "lat": 13.0, "lon": 23.0 },
+        { "lat": 13.0, "lon": 23.5 },
+        { "lat": 13.5, "lon": 23.5 },
+        { "lat": 13.0, "lon": 23.0 }
+      ]
+    }
+  ],
+  "tags": { "type": "multipolygon", "natural": "water" }
+},
+{
+  "type": "relation",
+  "id": 7,
+  "members": [
+    {
+      "type": "way",
+      "ref": 15,
+      "role": "outer",
+      "geometry": [
+        { "lat": 14.0, "lon": 24.0 },
+        { "lat": 14.0, "lon": 24.5 },
+        { "lat": 14.5, "lon": 24.5 },
+        { "lat": 14.0, "lon": 24.0 }
+      ]
+    }
+  ],
+  "tags": { "type": "boundary", "boundary": "administrative" }
+},
+{
+  "type": "relation",
+  "id": 8,
+  "members": [
+    {
+      "type": "way",
+      "ref": 16,
+      "role": "",
+      "geometry": [ { "lat": 15.0, "lon": 25.0 }, { "lat": 15.1, "lon": 25.1 } ]
+    }
+  ],
+  "tags": { "type": "route", "route": "bicycle" }
+},
+{
+  "type": "relation",
+  "id": 9,
+  "members": [
+    {
+      "type": "way",
+      "ref": 17,
+      "role": "outer",
+      "geometry": [ { "lat": 16.0, "lon": 26.0 }, { "lat": 16.1, "lon": 26.1 } ]
+    }
+  ],
+  "tags": { "type": "multipolygon", "landuse": "forest" }
+}
 
   ]
 }
@@ -709,29 +942,45 @@ def selftest():
             feats = [json.loads(line) for line in f]
 
         # convert knows its denominator: the input file is complete by now
-        assert len(ticks) == 3, ticks
-        assert [t["features"] for t in ticks] == [1, 2, 3], ticks
+        # (relation 5 ticks once but adds two features: itself + member node)
+        assert len(ticks) == 6, ticks
+        assert [t["features"] for t in ticks] == [1, 2, 3, 5, 6, 7], ticks
         assert all(t["total"] == os.path.getsize(src) for t in ticks), ticks
         assert [t["bytes"] for t in ticks] == sorted(t["bytes"] for t in ticks)
-        # < 100 at the last feature: the skipped relation and the closing
+        # < 100 at the last feature: the skipped relations and the closing
         # brackets are still ahead of the read cursor
-        assert 80 < ticks[-1]["pct"] < 100, ticks[-1]
+        assert 60 < ticks[-1]["pct"] < 100, ticks[-1]
 
         assert [f["geometry"]["type"] for f in feats] == \
-            ["Polygon", "LineString", "Point"], feats
+            ["Polygon", "LineString", "Point",
+             "Polygon", "Point", "MultiPolygon", "Polygon"], feats
         assert all(isinstance(f["properties"]["_ts"], int) for f in feats)
         assert feats[0]["properties"]["@id"] == "way/1"
-        assert s["features"] == 3 and s["ways"] == 2 and s["nodes"] == 1
-        assert s["relationsSkipped"] == 1 and s["skipped"] == 0
-        assert s["editorsCount"] == 2 and s["changesetsCount"] == 2
-        assert s["elementVersionsCount"] == 6
+
+        # relation 5: outer stitched from two fragments (one reversed) + hole
+        rings = feats[3]["geometry"]["coordinates"]
+        assert feats[3]["properties"]["@id"] == "relation/5"
+        assert rings[0] == [[20.0, 10.0], [21.0, 10.0], [21.0, 11.0],
+                            [20.0, 11.0], [20.0, 10.0]], rings[0]
+        assert rings[1][0] == [20.4, 10.4] and rings[1][0] == rings[1][-1], rings[1]
+        # its label-role member node emits as a bare Point (osmtogeojson parity)
+        assert feats[4]["properties"] == {"@id": "node/99", "_ts": 0}, feats[4]
+        assert len(feats[5]["geometry"]["coordinates"]) == 2  # two outers
+        assert feats[6]["properties"]["@id"] == "relation/7"  # boundary type
+
+        assert s["features"] == 7 and s["ways"] == 2 and s["nodes"] == 2
+        assert s["relations"] == 3
+        # skipped relations: no type tag (4), route (8), unclosed outer (9)
+        assert s["relationsSkipped"] == 3 and s["skipped"] == 0
+        assert s["editorsCount"] == 2 and s["changesetsCount"] == 3
+        assert s["elementVersionsCount"] == 8
         assert s["oldestElement"].startswith("2019-01-01")
-        assert s["bbox"] == [-1.0, -1.0, 3.0, 3.0], s["bbox"]
-        assert sum(s["editRecencyBands"]) == 3
+        assert s["bbox"] == [-1.0, -1.0, 24.5, 14.5], s["bbox"]
+        assert sum(s["editRecencyBands"]) == 4
         assert sum(s["mapperRecencyBands"]) == 2
         assert s["editRecencyBands"][3] == 1
         assert s["qualityMetrics"]["staleElementsCount"] == 1
-        assert s["tagCounts"][0] == {"key": "building", "count": 2}, s["tagCounts"]
+        assert s["tagCounts"][0] == {"key": "type", "count": 3}, s["tagCounts"]
 
         # --json-progress emits one object per tick; anything else is error text
         assert PROGRESS_RE.match('{"progress":33.5}').group(1) == "33.5"

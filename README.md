@@ -129,10 +129,15 @@ against a live Overpass and asserts the whole contract. It defaults to the
 osmforcities dev tunnel (`https://localhost:8080/api/interpreter`); override
 with `PMTILER_OVERPASS`.
 
-Current state (v0.1, #2/#3/#4/#5/#7): relations are counted and skipped (#6),
-and `stats.json` omits `geometryMix` — it needs geodesic length/area, which is
-not accumulator-cheap. The stale-job sweep runs at startup and after each job
-rather than on a timer; an idle service never sweeps.
+Current state (v0.1, #2/#3/#4/#5/#6/#7): `type=multipolygon`/`boundary`
+relations are assembled into Polygon/MultiPolygon (#6); other relation types
+(`route` etc., see #13) and unassemblable ones stay counted in
+`relationsSkipped`. An assembled relation's node members (label,
+admin_centre) are emitted as bare Points with `_ts: 0` — osmtogeojson parity;
+they render in the oldest age band and have no meta. `stats.json` omits
+`geometryMix` — it needs geodesic length/area, which is not accumulator-cheap.
+The stale-job sweep runs at startup and after each job rather than on a timer;
+an idle service never sweeps.
 
 ## Deploy
 

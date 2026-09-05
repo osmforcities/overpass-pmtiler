@@ -15,6 +15,15 @@ Probe scripts expect an Overpass endpoint at `https://localhost:8080`
 - `convert_fast.py` — streaming Overpass JSON -> nd-geojson (+accumulator
   stats); 13 MB RSS at 2.23 GB input; `_ts` = numeric epoch (required by
   MapLibre `step` expressions)
+- `relcount.py` — relation share by element count, per template shape,
+  using the consuming app's query form (node+way+relation per OR group).
+  Sizes what #6 is worth: 0.13%-2.86% of features in the sampled cities,
+  0% for point and way templates.
+- `relarea.py` — the same question by area, since relations are the large
+  features (up to 7.4% of area). Sums a shoelace per member way, which is
+  only sound where outer members are already closed rings, so it reports a
+  fragmented count as its own reliability check — read the areas as a
+  floor. Assembling those rings properly is #6 itself.
 - `tile-harness.html` — MapLibre + pmtiles render harness (4-band age
   ramp). Serve the dir with Range support: `npx http-server . -p 8765`
   then open http://localhost:8765/tile-harness.html (expects

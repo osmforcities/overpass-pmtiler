@@ -27,14 +27,15 @@ INSECURE = os.environ.get("PMTILER_INSECURE", "1")
 DEADLINE = float(os.environ.get("CHECK_TIMEOUT", "900"))
 
 # Delft, rel 324269 -- ~39.5k buildings: small enough for a ~1 min run, big
-# enough to exercise the real area-query path.
+# enough to exercise the real area-query path. nwr matches the app's query
+# shape (all three element types), so relation assembly runs end-to-end.
 JOB = {
     "id": "check-delft-buildings",
-    "query": '[out:json];area(3600324269)->.a;way["building"](area.a);out geom meta;',
+    "query": '[out:json];area(3600324269)->.a;nwr["building"](area.a);out geom meta;',
     "timeout": 300,
     "maxsize": 536870912,
 }
-EXPECTED_FEATURES = 39576
+EXPECTED_FEATURES = 39627
 STATES = {"queued", "fetching", "converting", "baking", "done", "failed"}
 
 
@@ -123,11 +124,16 @@ def main():
         stats = job["stats"]
         assert abs(stats["features"] - EXPECTED_FEATURES) < EXPECTED_FEATURES * 0.2, \
             "unexpected feature count %s" % stats["features"]
-        assert stats["ways"] == stats["features"], stats
+        assert stats["nodes"] + stats["ways"] + stats["relations"] \
+            == stats["features"], stats
+        assert stats["relations"] > 0, "nwr query must assemble relations"
+        assert stats["relationsSkipped"] < stats["relations"], stats
         assert stats["editorsCount"] > 0 and stats["changesetsCount"] > 0, stats
         w, s, e, n = stats["bbox"]
         assert 4.2 < w < e < 4.5 and 51.9 < s < n < 52.1, stats["bbox"]
-        assert sum(stats["editRecencyBands"]) == stats["features"], stats
+        # only emitted member nodes (no meta) may be undated
+        undated = stats["features"] - sum(stats["editRecencyBands"])
+        assert 0 <= undated <= stats["nodes"], stats
         print("stats: %d features, %d editors, %d changesets" % (
             stats["features"], stats["editorsCount"], stats["changesetsCount"]))
 
