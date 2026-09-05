@@ -26,7 +26,8 @@ instance can use it.
 ## Job contract
 
 ```
-POST   /jobs      { id, query, maxsize, timeout } -> 202 { id, state }
+POST   /jobs      { id, query, maxsize, timeout, filterableTags }
+                  -> 202 { id, state }
 GET    /jobs/:id  -> { state: queued|fetching|converting|baking|done|failed,
                        startedAt, error?, stats? }
 GET    /jobs/:id/output.pmtiles
@@ -37,6 +38,14 @@ DELETE /jobs/:id               (ack -> cleanup)
 
 - `id` is supplied by the caller. POST of an existing id returns its
   current state — idempotent resubmits, no ID mapping anywhere.
+- `filterableTags` (optional, up to 32 tag keys) selects the keys reported
+  as `filterDimensions` in the stats: per-value counts (case-folded, with
+  the dominant original casing displayed; `;`-separated values split into
+  separate buckets) plus a `missing` count per key. Keys with zero values
+  are kept — a 100%-missing key is a finding, not noise. Mirrors the app's
+  `computeFilterDimensions(..., { keepEmpty: true })`. No `age` dimension
+  is emitted: tiles carry raw `_ts`, and the stats' `editRecencyBands`
+  cover age, so age bucketing stays a consumer concern.
 - `failed` carries the Overpass (or stage) error text through.
 - A periodic sweep removes jobs older than a configurable age regardless
   of ack.
@@ -134,8 +143,12 @@ relations are assembled into Polygon/MultiPolygon (#6); other relation types
 (`route` etc., see #13) and unassemblable ones stay counted in
 `relationsSkipped`. An assembled relation's node members (label,
 admin_centre) are emitted as bare Points with `_ts: 0` — osmtogeojson parity;
-they render in the oldest age band and have no meta. `stats.json` omits
-`geometryMix` — it needs geodesic length/area, which is not accumulator-cheap.
+they render in the oldest age band and have no meta. `stats.json` carries
+`geometryMix` (`{points, lines, areas, lineKm, areaKm2}`) and, when the job
+sets `filterableTags`, `filterDimensions` (#11) — both accumulated in the
+convert pass over full-fidelity data, never from tiles. Length and area use
+turf's spherical formulas (haversine + Chamberlain–Duquette, R=6371008.8) so
+the numbers match the app's turf-computed stored stats bit-for-bit.
 The stale-job sweep runs at startup and after each job rather than on a timer;
 an idle service never sweeps.
 

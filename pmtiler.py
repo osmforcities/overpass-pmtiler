@@ -11,6 +11,7 @@ import datetime
 import html
 import http.server
 import json
+import math
 import os
 import queue
 import re
@@ -47,6 +48,8 @@ OUTPUTS = {
 
 DAY = 86400
 BANDS = (90 * DAY, 365 * DAY, 730 * DAY)  # app dataset-recency.ts cutoffs
+EARTH_R = 6371008.8  # turf's sphere radius: geometryMix must match app stats
+MAX_FILTER_KEYS = 32
 
 Q = queue.Queue()
 CREATE_LOCK = threading.Lock()
@@ -324,7 +327,52 @@ def assemble_relation(el):
         return None
 
 
-def convert(inp, outp, tick=None):
+def line_length_m(coords):
+    """Haversine sum over a coordinate string -- @turf/length parity."""
+    total = 0.0
+    for i in range(len(coords) - 1):
+        lon1, lat1 = coords[i]
+        lon2, lat2 = coords[i + 1]
+        a = (math.sin(math.radians(lat2 - lat1) / 2) ** 2
+             + math.sin(math.radians(lon2 - lon1) / 2) ** 2
+             * math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)))
+        total += 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)) * EARTH_R
+    return total
+
+
+def ring_area_m2(ring):
+    """Chamberlain-Duquette spherical excess (signed) -- @turf/area parity."""
+    n = len(ring)
+    if n <= 2:
+        return 0.0
+    total = 0.0
+    for i in range(n):
+        total += ((math.radians(ring[(i + 2) % n][0]) - math.radians(ring[i][0]))
+                  * math.sin(math.radians(ring[(i + 1) % n][1])))
+    return total * EARTH_R * EARTH_R / 2
+
+
+def polygons_area_m2(polys):
+    """Sum of per-polygon (|outer| - sum |inners|), turf's Polygon handling."""
+    total = 0.0
+    for rings in polys:
+        total += abs(ring_area_m2(rings[0]))
+        for hole in rings[1:]:
+            total -= abs(ring_area_m2(hole))
+    return total
+
+
+def tag_dimension(key, counts, casing, missing):
+    """FilterDimension for one key -- app filter-dimensions.ts parity: values
+    sorted desc by count (ties keep first-seen order), displayed with the
+    dominant original casing (ties first-seen), zero-value keys kept."""
+    values = [{"value": max(casing[lo].items(), key=lambda vc: vc[1])[0],
+               "count": c}
+              for lo, c in sorted(counts.items(), key=lambda lc: -lc[1])]
+    return {"key": key, "kind": "tag", "values": values, "missing": missing}
+
+
+def convert(inp, outp, tick=None, filter_keys=()):
     """Overpass JSON -> nd-geojson + accumulator stats in one bounded-memory pass.
 
     Splits the elements array on element boundaries by brace depth (line-based;
@@ -344,6 +392,10 @@ def convert(inp, outp, tick=None):
     version_sum = age_sum = dated = recent_edits = stale = fresh = 0
     oldest = newest = None
     bbox = [180.0, 90.0, -180.0, -90.0]
+    dim_counts = {k: {} for k in filter_keys}   # key -> lowercased value -> count
+    dim_casing = {k: {} for k in filter_keys}   # key -> lower -> {variant: count}
+    dim_missing = dict.fromkeys(filter_keys, 0)
+    mix = {"points": 0, "lines": 0, "areas": 0, "lineKm": 0.0, "areaKm2": 0.0}
 
     # read binary: len(line) is then exact bytes, and json.loads takes bytes, so
     # progress costs nothing (f.tell() is disabled while iterating a text file)
@@ -403,6 +455,18 @@ def convert(inp, outp, tick=None):
                 counts["skipped"] += 1
                 continue
 
+            gt = geometry["type"]
+            if gt == "Point":
+                mix["points"] += 1
+            elif gt == "LineString":
+                mix["lines"] += 1
+                mix["lineKm"] += line_length_m(coords) / 1000.0
+            else:
+                mix["areas"] += 1
+                mix["areaKm2"] += polygons_area_m2(
+                    geometry["coordinates"] if gt == "MultiPolygon"
+                    else [geometry["coordinates"]]) / 1e6
+
             for lon, lat in coords:
                 if lon < bbox[0]:
                     bbox[0] = lon
@@ -448,6 +512,22 @@ def convert(inp, outp, tick=None):
             for key in tags:
                 tag_counts[key] = tag_counts.get(key, 0) + 1
 
+            for key in filter_keys:
+                raw = tags.get(key)
+                if raw is None:
+                    dim_missing[key] += 1
+                    continue
+                # ";"-split into separate buckets (vending=drinks;food), with the
+                # app's quirk: all-empty tokens fall back to the raw value
+                tokens = [t for t in (p.strip() for p in raw.split(";")) if t] \
+                    or [raw]
+                for value in tokens:
+                    lower = value.lower()
+                    kc = dim_counts[key]
+                    kc[lower] = kc.get(lower, 0) + 1
+                    variants = dim_casing[key].setdefault(lower, {})
+                    variants[value] = variants.get(value, 0) + 1
+
             props = dict(tags)
             props["@id"] = "%s/%s" % (kind, el["id"])
             props["_ts"] = ts  # numeric epoch: a string breaks MapLibre `step`
@@ -456,6 +536,9 @@ def convert(inp, outp, tick=None):
                                  separators=(",", ":")) + "\n")
             for ref, lon, lat in member_nodes:  # bare Points, osmtogeojson parity
                 counts["nodes"] += 1
+                mix["points"] += 1
+                for key in filter_keys:  # tagless, so missing for every dimension
+                    dim_missing[key] += 1
                 out.write(json.dumps(
                     {"type": "Feature",
                      "properties": {"@id": "node/%s" % ref, "_ts": 0},
@@ -491,8 +574,10 @@ def convert(inp, outp, tick=None):
         "mapperRecencyBands": mapper_bands,
         "tagCounts": [{"key": k, "count": c} for k, c in
                       sorted(tag_counts.items(), key=lambda kv: -kv[1])],
-        # ponytail: no geometryMix -- needs geodesic length/area, not accumulator
-        # -cheap. Add when the app consumes it.
+        "filterDimensions": [
+            tag_dimension(k, dim_counts[k], dim_casing[k], dim_missing[k])
+            for k in filter_keys],
+        "geometryMix": mix,
         "bbox": bbox if features else None,
         "seconds": round(time.time() - t0, 1),
         "peakRssMB": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // (1024 * 1024),
@@ -562,7 +647,8 @@ def run_job(jid):
 
         set_state(job, "converting")
         stats = convert(raw, os.path.join(jd, "data.ndjson"),
-                        progress_writer(job, "converting"))
+                        progress_writer(job, "converting"),
+                        filter_keys=job.get("filterableTags") or [])
         with open(os.path.join(jd, "stats.json"), "w", encoding="utf-8") as f:
             json.dump(stats, f)
         job["stats"] = stats
@@ -659,6 +745,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.err(400, "maxsize out of range")
         if timeout is not None and not 0 < timeout <= MAX_TIMEOUT:
             return self.err(400, "timeout out of range")
+        ftags = req.get("filterableTags")
+        if ftags is not None and not (
+                isinstance(ftags, list) and len(ftags) <= MAX_FILTER_KEYS
+                and all(isinstance(k, str) and 0 < len(k) <= 255 for k in ftags)):
+            return self.err(400, "filterableTags must be a list of up to %d "
+                            "tag keys" % MAX_FILTER_KEYS)
 
         with CREATE_LOCK:
             existing = read_job(jid)
@@ -666,7 +758,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_json(200, {"id": jid, "state": existing["state"]})
             os.makedirs(jobdir(jid), exist_ok=True)
             write_job({"id": jid, "query": query, "maxsize": maxsize,
-                       "timeout": timeout, "state": "queued",
+                       "timeout": timeout, "filterableTags": ftags,
+                       "state": "queued",
                        "startedAt": now_iso(), "error": None, "stats": None})
             Q.put(jid)
         log("job", jid, "queued")
@@ -791,7 +884,7 @@ FIXTURE = '''{
     { "lat": 1.0, "lon": 1.0 },
     { "lat": 0.0, "lon": 0.0 }
   ],
-  "tags": { "building": "yes" }
+  "tags": { "building": "yes", "surface": "Asphalt;gravel" }
 },
 {
   "type": "way",
@@ -804,7 +897,8 @@ FIXTURE = '''{
   "tags": { "highway": "path", "building": "no" }
 },
 { "type": "node", "id": 3, "lat": -1.0, "lon": -1.0, "version": 2,
-  "changeset": 11, "user": "ada", "timestamp": "2026-08-02T00:00:00Z" },
+  "changeset": 11, "user": "ada", "timestamp": "2026-08-02T00:00:00Z",
+  "tags": { "surface": "asphalt" } },
 { "type": "relation", "id": 4, "members": [], "tags": { "building": "yes" } },
 {
   "type": "relation",
@@ -937,7 +1031,8 @@ def selftest():
         with open(src, "w", encoding="utf-8") as f:
             f.write(FIXTURE)
         ticks = []
-        s = convert(src, dst, lambda **kw: ticks.append(kw))  # unthrottled
+        s = convert(src, dst, lambda **kw: ticks.append(kw),  # unthrottled
+                    filter_keys=["surface", "building", "nonexistent"])
         with open(dst, encoding="utf-8") as f:
             feats = [json.loads(line) for line in f]
 
@@ -981,6 +1076,29 @@ def selftest():
         assert s["editRecencyBands"][3] == 1
         assert s["qualityMetrics"]["staleElementsCount"] == 1
         assert s["tagCounts"][0] == {"key": "type", "count": 3}, s["tagCounts"]
+
+        # filterDimensions: ";"-split, case-folded counts with dominant-casing
+        # display (tie -> first seen: "Asphalt"), desc by count, missing per
+        # key, zero-value keys kept (keepEmpty semantics)
+        dims = s["filterDimensions"]
+        assert dims[0] == {"key": "surface", "kind": "tag",
+                           "values": [{"value": "Asphalt", "count": 2},
+                                      {"value": "gravel", "count": 1}],
+                           "missing": 5}, dims[0]
+        assert dims[1] == {"key": "building", "kind": "tag",
+                           "values": [{"value": "yes", "count": 1},
+                                      {"value": "no", "count": 1}],
+                           "missing": 5}, dims[1]
+        assert dims[2] == {"key": "nonexistent", "kind": "tag",
+                           "values": [], "missing": 7}, dims[2]
+
+        # geometryMix: counts per rendered geometry type; length/area pinned
+        # against @turf/length + @turf/area over the same ndjson (bit-identical
+        # at time of writing, tolerance for float-order drift only)
+        mix = s["geometryMix"]
+        assert (mix["points"], mix["lines"], mix["areas"]) == (2, 1, 4), mix
+        assert abs(mix["lineKm"] - 157.17776891752186) < 1e-6, mix
+        assert abs(mix["areaKm2"] - 22365.44322391079) < 1e-3, mix
 
         # --json-progress emits one object per tick; anything else is error text
         assert PROGRESS_RE.match('{"progress":33.5}').group(1) == "33.5"
