@@ -53,9 +53,17 @@ MAX_FILTER_KEYS = 32
 
 # osm-polygon-features 0.9.2, vendored (27 rules, no dependency): which tags make
 # a closed way an area. key -> True (any value) | ("in"|"ex", frozenset(values)).
-# ponytail: frozen snapshot -- nothing detects upstream drift. Regenerate
-# from the package JSON when the oracle reports type mismatches it did not
-# report before.
+#
+# Pin to the version the app's osmtogeojson resolves (^0.9.1 -> 0.9.2), not to
+# whatever is newest: parity with the app is the contract here, so a newer table
+# would break it rather than improve it. Upstream master is also 0.9.2 as of
+# 2026-09, so the pin costs nothing today.
+#
+# Check rows against that package's polygon-features.json, never against recall
+# -- the #12 review flagged railway's "platform" as a typo for "traverser",
+# which appears in neither 0.9.2 nor upstream master. Regenerate only when the
+# app bumps osmtogeojson, then re-run spike/oracle_compare.py; nothing else
+# detects the two drifting apart.
 POLYGON_FEATURES = {
     "building": True,
     "highway": ("in", frozenset({"services", "rest_area", "escape", "elevator"})),
