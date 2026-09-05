@@ -34,6 +34,7 @@ JOB = {
     "query": '[out:json];area(3600324269)->.a;nwr["building"](area.a);out geom meta;',
     "timeout": 300,
     "maxsize": 536870912,
+    "filterableTags": ["building", "amenity"],
 }
 EXPECTED_FEATURES = 39627
 STATES = {"queued", "fetching", "converting", "baking", "done", "failed"}
@@ -137,6 +138,27 @@ def main():
         print("stats: %d features, %d editors, %d changesets" % (
             stats["features"], stats["editorsCount"], stats["changesetsCount"]))
 
+        # filterDimensions follow the job's filterableTags, in order
+        dims = stats["filterDimensions"]
+        assert [d["key"] for d in dims] == JOB["filterableTags"], dims
+        building = dims[0]
+        assert building["kind"] == "tag" and building["values"], building
+        assert building["values"] == sorted(
+            building["values"], key=lambda v: -v["count"]), "not sorted desc"
+        # every non-missing feature contributes at least one value bucket
+        assert sum(v["count"] for v in building["values"]) \
+            >= stats["features"] - building["missing"], building["values"][:3]
+        # every feature matched building=* except emitted member nodes
+        assert building["missing"] <= stats["nodes"], building["missing"]
+        assert dims[1]["missing"] > 0, dims[1]  # amenity: sparse, entry kept
+        mix = stats["geometryMix"]
+        assert mix["points"] + mix["lines"] + mix["areas"] == stats["features"], mix
+        assert mix["areas"] > mix["lines"] and mix["areas"] > mix["points"], mix
+        assert mix["areaKm2"] > 0 and mix["lineKm"] >= 0, mix
+        print("dims: building top=%s(%d) missing=%d; mix: %d areas, %.2f km2" % (
+            building["values"][0]["value"], building["values"][0]["count"],
+            building["missing"], mix["areas"], mix["areaKm2"]))
+
         # --- outputs
         status, _, sj = call(base, "GET", "/jobs/%s/stats.json" % JOB["id"])
         assert status == 200 and json.loads(sj)["features"] == stats["features"]
@@ -172,6 +194,9 @@ def main():
         assert call(base, "POST", "/jobs", {"id": "ok", "query": ""})[0] == 400
         assert call(base, "POST", "/jobs",
                     {"id": "ok", "query": "x", "timeout": 99999})[0] == 400
+        assert call(base, "POST", "/jobs",
+                    {"id": "ok", "query": "x",
+                     "filterableTags": "building"})[0] == 400
 
         # --- overpass errors surface verbatim
         bad = {"id": "check-broken", "query": "this is not overpass ql", "timeout": 30}
