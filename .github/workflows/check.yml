@@ -1,0 +1,16 @@
+# Test CI: the converter selftest needs zero setup (stdlib only) and pins the
+# service's behaviour contract -- osmtogeojson/turf parity, the stats
+# accumulator, query rewriting. Before this, nothing ran it automatically.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 pmtiler.py --selftest
