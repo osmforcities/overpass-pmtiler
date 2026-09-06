@@ -64,7 +64,14 @@ if not LIVE:
             end = query.find(";")
             if query.startswith("[") and end != -1:
                 query = query[end + 1:]
-            if "out" in query:
+            if "nothing_matches" in query:
+                body = b'{\n  "elements": [\n  ]\n}\n'  # valid, zero elements
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif "out" in query:
                 # Pad past 1 MB: the service reads in 1 MiB chunks and a
                 # buffered read blocks until the chunk is full, so the first
                 # write below must satisfy a whole read() for a progress tick
@@ -279,6 +286,25 @@ def main():
         assert len(part) == 100 and part == archive[:100], len(part)
         assert headers["Content-Range"] == "bytes 0-99/%d" % len(archive)
 
+        # the edges real clients hit: suffix, open-ended, unsatisfiable,
+        # malformed (full body per RFC)
+        arc = "/jobs/%s/output.pmtiles" % JOB["id"]
+        status, headers, part = call(base, "GET", arc,
+                                     headers={"Range": "bytes=-100"})
+        assert status == 206 and part == archive[-100:], status
+        assert headers["Content-Range"] == "bytes %d-%d/%d" % (
+            len(archive) - 100, len(archive) - 1, len(archive))
+        status, _, part = call(base, "GET", arc,
+                               headers={"Range": "bytes=100-"})
+        assert status == 206 and part == archive[100:], status
+        status, headers, part = call(base, "GET", arc,
+                                     headers={"Range": "bytes=-0"})
+        assert status == 416, status
+        assert headers["Content-Range"] == "bytes */%d" % len(archive)
+        status, _, part = call(base, "GET", arc,
+                               headers={"Range": "bytes=nope"})
+        assert status == 200 and part == archive, status
+
         # --- idempotent resubmit: same id, current state, no re-run
         status, _, body = call(base, "POST", "/jobs", JOB)
         assert status == 200 and json.loads(body)["state"] == "done", body
@@ -300,6 +326,15 @@ def main():
         assert job.get("error", "").startswith("Error"), job  # not the boilerplate
         assert "parse error" in job["error"], job
         print("failure path:", job["error"][:120])
+
+        # --- zero-feature query fails with the real cause, not a bake error
+        if not LIVE:
+            empty = {"id": "check-empty",
+                     "query": "nothing_matches out;", "timeout": 30}
+            assert call(base, "POST", "/jobs", empty)[0] == 202
+            job, _ = poll(base, empty["id"])
+            assert job["state"] == "failed", job
+            assert job.get("error") == "query matched no elements", job
 
         # --- delete = ack + cleanup
         assert call(base, "DELETE", "/jobs/" + JOB["id"])[0] == 200
