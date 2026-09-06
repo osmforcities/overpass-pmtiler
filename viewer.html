@@ -169,31 +169,39 @@ async function submit(body) {
   location.search = "?job=" + encodeURIComponent(body.id);  // 202 new, 200 existing
 }
 
+// Both pollers reschedule in a finally: a failed fetch (service restart,
+// blip) must cost one repaint, never silently end the refresh chain.
 async function refreshList() {
-  const jobs = await (await fetch("/jobs")).json();
-  document.getElementById("list").innerHTML = jobs.length
-    ? jobs.map(j =>
-        `<a class="job" href="?job=${encodeURIComponent(j.id)}">` +
-        `<span class="badge ${esc(j.state)}">${esc(j.state)}</span>` +
-        `<span class="jobid">${esc(j.id)}</span>` +
-        `<span class="meta">${esc(progressText(j.progress))}</span>` +
-        (j.errorKind === "too_large"
-          ? '<span class="badge kind">too large</span>' : "") +
-        `</a>`).join("")
-    : "<i>none yet</i>";
-  setTimeout(refreshList, 2000);
+  try {
+    const jobs = await (await fetch("/jobs")).json();
+    document.getElementById("list").innerHTML = jobs.length
+      ? jobs.map(j =>
+          `<a class="job" href="?job=${encodeURIComponent(j.id)}">` +
+          `<span class="badge ${esc(j.state)}">${esc(j.state)}</span>` +
+          `<span class="jobid">${esc(j.id)}</span>` +
+          `<span class="meta">${esc(progressText(j.progress))}</span>` +
+          (j.errorKind === "too_large"
+            ? '<span class="badge kind">too large</span>' : "") +
+          `</a>`).join("")
+      : "<i>none yet</i>";
+  } finally {
+    setTimeout(refreshList, 2000);
+  }
 }
 
 async function refreshStatus() {
-  const s = await (await fetch("/status")).json();
-  const chips = Object.entries(s.jobStates)
-    .map(([state, n]) => `<span class="chip">${n} ${esc(state)}</span>`);
-  if (s.queueDepth) chips.unshift(`<span class="chip">queue ${s.queueDepth}</span>`);
-  chips.push(`<span class="chip">spool ${human(s.spoolBytes)}</span>`,
-             `<span class="chip">disk free ${human(s.diskFreeBytes)}</span>`,
-             `<span class="chip">up ${(s.uptimeSeconds / 3600).toFixed(1)}h</span>`);
-  document.getElementById("status").innerHTML = chips.join("");
-  setTimeout(refreshStatus, 5000);
+  try {
+    const s = await (await fetch("/status")).json();
+    const chips = Object.entries(s.jobStates)
+      .map(([state, n]) => `<span class="chip">${n} ${esc(state)}</span>`);
+    if (s.queueDepth) chips.unshift(`<span class="chip">queue ${s.queueDepth}</span>`);
+    chips.push(`<span class="chip">spool ${human(s.spoolBytes)}</span>`,
+               `<span class="chip">disk free ${human(s.diskFreeBytes)}</span>`,
+               `<span class="chip">up ${(s.uptimeSeconds / 3600).toFixed(1)}h</span>`);
+    document.getElementById("status").innerHTML = chips.join("");
+  } finally {
+    setTimeout(refreshStatus, 5000);
+  }
 }
 
 async function index() {
