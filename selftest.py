@@ -7,15 +7,14 @@ import shutil
 import time
 
 import config
-from bake import PROGRESS_RE
+from bake import PROGRESS_RE, validate_pmtiles
 from config import DAY, now_iso
 from convert import brace_delta, convert, is_area
 from errors import Aborted, StageError
 from overpass import apply_settings, html_error, tail_remark
 from runner import Q, recover
-from spool import (job_directory as jobdir, progress_writer, read_job, sweep,
+from spool import (job_directory, progress_writer, read_job, sweep,
                    write_job)
-from bake import validate_pmtiles
 
 
 FIXTURE = '''{
@@ -176,80 +175,84 @@ FIXTURE = '''{
 
 
 def selftest():
-    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".selftest")
-    os.makedirs(d, exist_ok=True)
+    scratch_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               ".selftest")
+    os.makedirs(scratch_dir, exist_ok=True)
     try:
-        src, dst = os.path.join(d, "raw.json"), os.path.join(d, "out.ndjson")
-        with open(src, "w", encoding="utf-8") as f:
+        source_path = os.path.join(scratch_dir, "raw.json")
+        output_path = os.path.join(scratch_dir, "out.ndjson")
+        with open(source_path, "w", encoding="utf-8") as f:
             f.write(FIXTURE)
         ticks = []
-        s = convert(src, dst, lambda **kw: ticks.append(kw),  # unthrottled
-                    filter_keys=["surface", "building", "nonexistent"])
-        with open(dst, encoding="utf-8") as f:
-            feats = [json.loads(line) for line in f]
+        stats = convert(source_path, output_path,
+                        lambda **kw: ticks.append(kw),  # unthrottled
+                        filter_keys=["surface", "building", "nonexistent"])
+        with open(output_path, encoding="utf-8") as f:
+            features = [json.loads(line) for line in f]
 
         # convert knows its denominator: the input file is complete by now
         # (relation 5 ticks once but adds two features: itself + member node)
         assert len(ticks) == 6, ticks
         assert [t["features"] for t in ticks] == [1, 2, 3, 5, 6, 7], ticks
-        assert all(t["total"] == os.path.getsize(src) for t in ticks), ticks
+        assert all(t["total"] == os.path.getsize(source_path)
+                   for t in ticks), ticks
         assert [t["bytes"] for t in ticks] == sorted(t["bytes"] for t in ticks)
         # < 100 at the last feature: the skipped relations and the closing
         # brackets are still ahead of the read cursor
         assert 60 < ticks[-1]["pct"] < 100, ticks[-1]
 
-        assert [f["geometry"]["type"] for f in feats] == \
+        assert [f["geometry"]["type"] for f in features] == \
             ["Polygon", "LineString", "Point",
-             "Polygon", "Point", "MultiPolygon", "Polygon"], feats
-        assert all(isinstance(f["properties"]["_ts"], int) for f in feats)
-        assert feats[0]["properties"]["@id"] == "way/1"
+             "Polygon", "Point", "MultiPolygon", "Polygon"], features
+        assert all(isinstance(f["properties"]["_ts"], int) for f in features)
+        assert features[0]["properties"]["@id"] == "way/1"
 
         # relation 5: outer stitched from two fragments (one reversed) + hole
-        rings = feats[3]["geometry"]["coordinates"]
-        assert feats[3]["properties"]["@id"] == "relation/5"
+        rings = features[3]["geometry"]["coordinates"]
+        assert features[3]["properties"]["@id"] == "relation/5"
         assert rings[0] == [[20.0, 10.0], [21.0, 10.0], [21.0, 11.0],
                             [20.0, 11.0], [20.0, 10.0]], rings[0]
         assert rings[1][0] == [20.4, 10.4] and rings[1][0] == rings[1][-1], rings[1]
         # its label-role member node emits as a bare Point (osmtogeojson parity)
-        assert feats[4]["properties"] == {"@id": "node/99", "_ts": 0}, feats[4]
-        assert len(feats[5]["geometry"]["coordinates"]) == 2  # two outers
-        assert feats[6]["properties"]["@id"] == "relation/7"  # boundary type
+        assert features[4]["properties"] == {"@id": "node/99", "_ts": 0}, features[4]
+        assert len(features[5]["geometry"]["coordinates"]) == 2  # two outers
+        assert features[6]["properties"]["@id"] == "relation/7"  # boundary type
 
-        assert s["schemaVersion"] == 1
-        assert s["recencyBandsDays"] == [90, 365, 730]
-        assert s["features"] == 7 and s["ways"] == 2 and s["nodes"] == 2
-        assert s["relations"] == 3
+        assert stats["schemaVersion"] == 1
+        assert stats["recencyBandsDays"] == [90, 365, 730]
+        assert stats["features"] == 7 and stats["ways"] == 2 and stats["nodes"] == 2
+        assert stats["relations"] == 3
         # skipped relations: no type tag (4), route (8), unclosed outer (9)
-        assert s["relationsSkipped"] == 3 and s["skipped"] == 0
-        assert s["editorsCount"] == 2 and s["changesetsCount"] == 3
-        assert s["elementVersionsCount"] == 8
-        assert s["oldestElement"].startswith("2019-01-01")
-        assert s["bbox"] == [-1.0, -1.0, 24.5, 14.5], s["bbox"]
-        assert sum(s["editRecencyBands"]) == 4
-        assert sum(s["mapperRecencyBands"]) == 2
-        assert s["editRecencyBands"][3] == 1
-        assert s["qualityMetrics"]["staleElementsCount"] == 1
-        assert s["tagCounts"][0] == {"key": "type", "count": 3}, s["tagCounts"]
+        assert stats["relationsSkipped"] == 3 and stats["skipped"] == 0
+        assert stats["editorsCount"] == 2 and stats["changesetsCount"] == 3
+        assert stats["elementVersionsCount"] == 8
+        assert stats["oldestElement"].startswith("2019-01-01")
+        assert stats["bbox"] == [-1.0, -1.0, 24.5, 14.5], stats["bbox"]
+        assert sum(stats["editRecencyBands"]) == 4
+        assert sum(stats["mapperRecencyBands"]) == 2
+        assert stats["editRecencyBands"][3] == 1
+        assert stats["qualityMetrics"]["staleElementsCount"] == 1
+        assert stats["tagCounts"][0] == {"key": "type", "count": 3}, stats["tagCounts"]
 
         # filterDimensions: ";"-split, case-folded counts with dominant-casing
         # display (tie -> first seen: "Asphalt"), desc by count, missing per
         # key, zero-value keys kept (keepEmpty semantics)
-        dims = s["filterDimensions"]
-        assert dims[0] == {"key": "surface", "kind": "tag",
+        dimensions = stats["filterDimensions"]
+        assert dimensions[0] == {"key": "surface", "kind": "tag",
                            "values": [{"value": "Asphalt", "count": 2},
                                       {"value": "gravel", "count": 1}],
-                           "missing": 5}, dims[0]
-        assert dims[1] == {"key": "building", "kind": "tag",
+                           "missing": 5}, dimensions[0]
+        assert dimensions[1] == {"key": "building", "kind": "tag",
                            "values": [{"value": "yes", "count": 1},
                                       {"value": "no", "count": 1}],
-                           "missing": 5}, dims[1]
-        assert dims[2] == {"key": "nonexistent", "kind": "tag",
-                           "values": [], "missing": 7}, dims[2]
+                           "missing": 5}, dimensions[1]
+        assert dimensions[2] == {"key": "nonexistent", "kind": "tag",
+                           "values": [], "missing": 7}, dimensions[2]
 
         # geometryMix: counts per rendered geometry type; length/area pinned
         # against @turf/length + @turf/area over the same ndjson (bit-identical
         # at time of writing, tolerance for float-order drift only)
-        mix = s["geometryMix"]
+        mix = stats["geometryMix"]
         assert (mix["points"], mix["lines"], mix["areas"]) == (2, 1, 4), mix
         assert abs(mix["lineKm"] - 157.17776891752186) < 1e-6, mix
         assert abs(mix["areaKm2"] - 22365.44322391079) < 1e-3, mix
@@ -276,18 +279,19 @@ def selftest():
         assert not is_area({"name": "nowhere"})        # unknown key
 
         # and that convert() actually consults it: three closed rings, one shape
-        src2, dst2 = os.path.join(d, "areas.json"), os.path.join(d, "areas.ndjson")
+        area_source_path = os.path.join(scratch_dir, "areas.json")
+        area_output_path = os.path.join(scratch_dir, "areas.ndjson")
         ring = ('[{"lat":0,"lon":0},{"lat":0,"lon":1},'
                 '{"lat":1,"lon":1},{"lat":0,"lon":0}]')
-        with open(src2, "w", encoding="utf-8") as f:
+        with open(area_source_path, "w", encoding="utf-8") as f:
             f.write('{\n  "elements": [\n' + ",\n".join(
                 '{"type":"way","id":%d,"geometry":%s,"tags":%s}' % (i, ring, t)
                 for i, t in enumerate((
                     '{"building":"yes"}',
                     '{"highway":"cycleway"}',
                     '{"highway":"cycleway","area":"yes"}'))) + "\n  ]\n}\n")
-        convert(src2, dst2)
-        with open(dst2, encoding="utf-8") as f:
+        convert(area_source_path, area_output_path)
+        with open(area_output_path, encoding="utf-8") as f:
             kinds = [json.loads(line)["geometry"]["type"] for line in f]
         assert kinds == ["Polygon", "LineString", "Polygon"], kinds
 
@@ -313,41 +317,42 @@ def selftest():
         # an unbalanced "{" inside a tag value must not desync the splitter
         # (before brace_delta it swallowed every following element and charged
         # the whole loss as skipped=1)
-        braced = os.path.join(d, "braces.json")
+        braced = os.path.join(scratch_dir, "braces.json")
         with open(braced, "w", encoding="utf-8") as f:
             f.write('{\n  "elements": [\n{\n  "type": "node",\n  "id": 1,\n'
                     '  "lat": 1.0,\n  "lon": 1.0,\n  "tags": {\n'
                     '    "note": "curly { brace"\n  }\n},\n{\n'
                     '  "type": "node",\n  "id": 2,\n  "lat": 2.0,\n'
                     '  "lon": 2.0\n}\n  ]\n}\n')
-        bs = convert(braced, os.path.join(d, "braces.ndjson"))
-        assert bs["features"] == 2 and bs["skipped"] == 0, bs
+        braced_stats = convert(braced, os.path.join(scratch_dir, "braces.ndjson"))
+        assert braced_stats["features"] == 2 \
+            and braced_stats["skipped"] == 0, braced_stats
 
         # non-pretty-printed input fails loudly at the convert stage
-        compact = os.path.join(d, "compact.json")
+        compact = os.path.join(scratch_dir, "compact.json")
         with open(compact, "w", encoding="utf-8") as f:
             f.write('{"version":0.6,"elements":[{"type":"node","id":1,'
                     '"lat":1.0,"lon":1.0}]}')
         try:
-            convert(compact, os.path.join(d, "compact.ndjson"))
+            convert(compact, os.path.join(scratch_dir, "compact.ndjson"))
             raise AssertionError("compact overpass output must fail loudly")
         except StageError as e:
             assert "overpass response format" in str(e), e
 
         # abort seam: a stale run must strand on its next write, both when the
         # dir is gone and when a re-POST recreated it (generation mismatch)
-        old_spool, config.SPOOL = config.SPOOL, os.path.join(d, "spool")
+        old_spool, config.SPOOL = config.SPOOL, os.path.join(scratch_dir, "spool")
         try:
             job = {"id": "j1", "state": "queued", "startedAt": now_iso()}
-            os.makedirs(jobdir("j1"))
+            os.makedirs(job_directory("j1"))
             write_job(job)
-            shutil.rmtree(jobdir("j1"))
+            shutil.rmtree(job_directory("j1"))
             try:
                 write_job(job)
                 raise AssertionError("deleted dir must abort")
             except Aborted:
                 pass
-            os.makedirs(jobdir("j1"))
+            os.makedirs(job_directory("j1"))
             write_job({"id": "j1", "state": "queued", "startedAt": now_iso()})
             try:
                 write_job(job)
@@ -357,39 +362,39 @@ def selftest():
 
             # progress_writer: first tick always writes, the throttle
             # suppresses, and a tick on a deleted job is an abort checkpoint
-            job2 = {"id": "j2", "state": "fetching", "startedAt": now_iso()}
-            os.makedirs(jobdir("j2"))
-            write_job(job2)
-            tick = progress_writer(job2, "fetching", interval=3600)
+            progress_job = {"id": "j2", "state": "fetching", "startedAt": now_iso()}
+            os.makedirs(job_directory("j2"))
+            write_job(progress_job)
+            tick = progress_writer(progress_job, "fetching", interval=3600)
             tick(bytes=1)
             assert read_job("j2")["progress"] == {"stage": "fetching",
                                                   "bytes": 1}
             tick(bytes=2)  # throttled: on-disk progress unchanged
             assert read_job("j2")["progress"]["bytes"] == 1
-            shutil.rmtree(jobdir("j2"))
+            shutil.rmtree(job_directory("j2"))
             try:
-                progress_writer(job2, "fetching", interval=0)(bytes=3)
+                progress_writer(progress_job, "fetching", interval=0)(bytes=3)
                 raise AssertionError("tick on a deleted job must abort")
             except Aborted:
                 pass
 
             # sweep: age is last-write mtime; stale dirs go, fresh ones stay
-            os.makedirs(jobdir("stale"))
-            os.makedirs(jobdir("fresh"))
-            old_t = time.time() - (config.MAX_AGE_DAYS + 1) * DAY
-            os.utime(jobdir("stale"), (old_t, old_t))
+            os.makedirs(job_directory("stale"))
+            os.makedirs(job_directory("fresh"))
+            stale_mtime = time.time() - (config.MAX_AGE_DAYS + 1) * DAY
+            os.utime(job_directory("stale"), (stale_mtime, stale_mtime))
             sweep()
-            assert not os.path.isdir(jobdir("stale"))
-            assert os.path.isdir(jobdir("fresh"))
+            assert not os.path.isdir(job_directory("stale"))
+            assert os.path.isdir(job_directory("fresh"))
 
             # recover: running states requeue FIFO with stale progress
             # cleared; a corrupt record is skipped (and logged), not fatal
-            os.makedirs(jobdir("bad"))
-            with open(os.path.join(jobdir("bad"), "job.json"), "w") as f:
+            os.makedirs(job_directory("bad"))
+            with open(os.path.join(job_directory("bad"), "job.json"), "w") as f:
                 f.write("not json")
             for jid, state, ts in (("r2", "baking", "2001-02"),
                                    ("r1", "fetching", "2001-01")):
-                os.makedirs(jobdir(jid))
+                os.makedirs(job_directory(jid))
                 write_job({"id": jid, "state": state, "startedAt": ts,
                            "progress": {"stage": state, "pct": 80}})
             recover()
@@ -402,7 +407,7 @@ def selftest():
             config.SPOOL = old_spool
 
         # validate_pmtiles: garbage must not pass as an archive
-        bad = os.path.join(d, "bad.pmtiles")
+        bad = os.path.join(scratch_dir, "bad.pmtiles")
         with open(bad, "wb") as f:
             f.write(b"nope")
         try:
@@ -413,16 +418,16 @@ def selftest():
 
         # tail_remark: a top-level remark (2-space indent) is a runtime
         # error; the OSM tag remark=* on an element is data, not an error
-        rp = os.path.join(d, "tail.json")
-        with open(rp, "w", encoding="utf-8") as f:
+        remark_tail_path = os.path.join(scratch_dir, "tail.json")
+        with open(remark_tail_path, "w", encoding="utf-8") as f:
             f.write('{\n  "elements": [\n{\n  "type": "node",\n'
                     '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ],\n'
                     '  "remark": "runtime error: Query timed out"\n}\n')
-        assert tail_remark(rp) == "runtime error: Query timed out"
-        with open(rp, "w", encoding="utf-8") as f:
+        assert tail_remark(remark_tail_path) == "runtime error: Query timed out"
+        with open(remark_tail_path, "w", encoding="utf-8") as f:
             f.write('{\n  "elements": [\n{\n  "type": "node",\n'
                     '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ]\n}\n')
-        assert tail_remark(rp) is None
+        assert tail_remark(remark_tail_path) is None
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
     print("selftest ok")
