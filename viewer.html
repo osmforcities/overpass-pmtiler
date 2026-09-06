@@ -36,7 +36,7 @@
 const hud = document.getElementById("hud");
 const jobId = new URLSearchParams(location.search).get("job");
 
-// app recency bands (dataset-recency.ts) + viridis knobs (map-style.ts)
+// recency band colors (viridis), cutoffs matching stats recencyBandsDays
 const BANDS = [["#414487", "<= 90d"], ["#2a788e", "90d-1y"],
                ["#22a884", "1-2y"], ["#7ad151", "> 2y"]];
 const d = 86400;
