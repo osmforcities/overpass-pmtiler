@@ -97,7 +97,10 @@ if not LIVE:
                 self.wfile.write(body[:split])
                 self.wfile.flush()
                 time.sleep(0.5)  # hold fetching open for the polls
-                self.wfile.write(body[split:])
+                try:
+                    self.wfile.write(body[split:])
+                except ConnectionError:
+                    pass  # the recovery scenario kills the service mid-read
             else:
                 body = ('<html><p>copyright boilerplate</p>'
                         '<p><b>Error</b>: line 1: parse error - Unknown type '
@@ -181,19 +184,23 @@ def main():
     os.makedirs(SPOOL)
     port = free_port()
     base = "http://127.0.0.1:%d" % port
-    proc = subprocess.Popen(
-        [sys.executable, os.path.join(HERE, "pmtiler.py")],
-        env=dict(os.environ, PMTILER_SPOOL=SPOOL, PMTILER_PORT=str(port),
-                 PMTILER_OVERPASS=overpass, PMTILER_INSECURE=INSECURE))
-    try:
+    service_env = dict(os.environ, PMTILER_SPOOL=SPOOL, PMTILER_PORT=str(port),
+                       PMTILER_OVERPASS=overpass, PMTILER_INSECURE=INSECURE)
+
+    def spawn_service():
+        started = subprocess.Popen(
+            [sys.executable, os.path.join(HERE, "pmtiler.py")],
+            env=service_env)
         for _ in range(50):
             try:
                 call(base, "GET", "/jobs/nope")
-                break
+                return started
             except OSError:
                 time.sleep(0.2)
-        else:
-            raise AssertionError("service did not come up on %s" % base)
+        raise AssertionError("service did not come up on %s" % base)
+
+    proc = spawn_service()
+    try:
         print("pmtiler up on", base, "overpass:", overpass)
 
         # --- happy path
@@ -375,6 +382,52 @@ def main():
         assert status == 200, status
         assert any(j["id"] == JOB["id"] for j in json.loads(body)), body[:200]
         shutil.rmtree(os.path.join(SPOOL, "malformed"))
+
+        # --- crash recovery (#9): kill mid-run, restart, jobs resume FIFO
+        if not LIVE:
+            # seed a job that "crashed mid-bake long ago": recover() must
+            # run it FIRST (FIFO by startedAt) and tippecanoe -f must
+            # overwrite the partial archive the crash left behind
+            seeded = "check-recover-bake"
+            os.makedirs(os.path.join(SPOOL, seeded), exist_ok=True)
+            with open(os.path.join(SPOOL, seeded, "job.json"), "w") as f:
+                json.dump({"id": seeded, "query": JOB["query"],
+                           "maxsize": None, "timeout": 30,
+                           "filterableTags": None, "state": "baking",
+                           "startedAt": "2000-01-01T00:00:00+00:00",
+                           "error": None, "stats": None}, f)
+            with open(os.path.join(SPOOL, seeded, "output.pmtiles"), "wb") as f:
+                f.write(b"partial junk left by the interrupted bake")
+
+            killed = "check-recover-fetch"
+            assert call(base, "POST", "/jobs",
+                        {"id": killed, "query": JOB["query"],
+                         "timeout": 30})[0] == 202
+            end = time.time() + DEADLINE
+            while get_json(base, "/jobs/" + killed)[1]["state"] == "queued":
+                assert time.time() < end, "job never started"
+                time.sleep(0.05)
+            proc.kill()  # SIGKILL: no goodbye, like a crash or an OOM kill
+            proc.wait()
+            with open(os.path.join(SPOOL, killed, "job.json")) as f:
+                interrupted = json.load(f)["state"]
+            assert interrupted in ("fetching", "converting", "baking"), \
+                interrupted  # exactly the limbo recover() exists to fix
+
+            proc = spawn_service()  # same spool, same port
+            job, _ = poll(base, seeded)
+            assert job["state"] == "done", job
+            job, _ = poll(base, killed)
+            assert job["state"] == "done", job
+            # FIFO: the seeded job (older startedAt) baked first
+            assert (os.path.getmtime(os.path.join(SPOOL, seeded, "stats.json"))
+                    <= os.path.getmtime(os.path.join(SPOOL, killed,
+                                                     "stats.json")))
+            with open(os.path.join(SPOOL, seeded, "output.pmtiles"), "rb") as f:
+                assert f.read(7) == b"PMTiles", \
+                    "partial archive must be overwritten on replay"
+            print("recovery: %s replayed from %s, both done, FIFO held"
+                  % (killed, interrupted))
 
         # --- delete = ack + cleanup
         assert call(base, "DELETE", "/jobs/" + JOB["id"])[0] == 200
