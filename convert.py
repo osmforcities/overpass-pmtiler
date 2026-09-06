@@ -278,7 +278,9 @@ def brace_delta(line: bytes) -> int:
 
 def convert(input_path: str, output_path: str,
             tick: Callable[..., None] | None = None,
-            filter_keys: Iterable[str] = ()) -> dict:
+            filter_keys: Iterable[str] = (),
+            keep_meta: bool = False,
+            age_bands_days: Iterable[int] = ()) -> dict:
     """Overpass JSON -> nd-geojson + accumulator stats in one bounded-memory pass.
 
     Splits the elements array on element boundaries by string-aware brace
@@ -302,6 +304,11 @@ def convert(input_path: str, output_path: str,
     dim_counts = {k: {} for k in filter_keys}   # key -> lowercased value -> count
     dim_casing = {k: {} for k in filter_keys}   # key -> lower -> {variant: count}
     dim_missing = dict.fromkeys(filter_keys, 0)
+    # Consumer-chosen age cutoffs (ageBandsDays): per-FEATURE counts, undated
+    # features land in the final "older" bucket -- unlike editRecencyBands,
+    # which counts dated elements only.
+    age_band_seconds = [days * DAY for days in age_bands_days]
+    age_bands = [0] * (len(age_band_seconds) + 1) if age_band_seconds else None
     mix = {"points": 0, "lines": 0, "areas": 0, "lineKm": 0.0, "areaKm2": 0.0}
 
     # read binary: len(line) is then exact bytes, and json.loads takes bytes, so
@@ -431,6 +438,13 @@ def convert(input_path: str, output_path: str,
                 if user and timestamp > mapper_latest.get(user, 0):
                     mapper_latest[user] = timestamp
 
+            if age_bands is not None:
+                if timestamp:
+                    age_bands[sum((now - timestamp) > band
+                                  for band in age_band_seconds)] += 1
+                else:
+                    age_bands[-1] += 1
+
             for key in tags:
                 tag_counts[key] = tag_counts.get(key, 0) + 1
 
@@ -453,12 +467,22 @@ def convert(input_path: str, output_path: str,
             properties = dict(tags)
             properties["@id"] = "%s/%s" % (kind, element["id"])
             properties["_ts"] = timestamp  # numeric: a string breaks MapLibre `step`
+            if keep_meta:
+                # Editor metadata rides in the nd-geojson only -- the bake
+                # excludes these keys from tiles (bake.py) so archives stay lean
+                for meta_key in ("user", "uid", "version", "changeset"):
+                    if element.get(meta_key) is not None:
+                        properties["@" + meta_key] = element[meta_key]
+                if timestamp_iso:
+                    properties["@timestamp"] = timestamp_iso
             out.write(json.dumps({"type": "Feature", "properties": properties,
                                   "geometry": geometry},
                                  separators=(",", ":")) + "\n")
             for ref, lon, lat in member_nodes:  # bare Points, osmtogeojson parity
                 counts["nodes"] += 1
                 mix["points"] += 1
+                if age_bands is not None:  # undated by construction
+                    age_bands[-1] += 1
                 for key in filter_keys:  # tagless, so missing for every dimension
                     dim_missing[key] += 1
                 out.write(json.dumps(
@@ -496,6 +520,8 @@ def convert(input_path: str, output_path: str,
                            "recentlyUpdatedElementsPercentage": pct(fresh)},
         "editRecencyBands": edit_bands,
         "mapperRecencyBands": mapper_bands,
+        # Only when requested: len(ageBandsDays)+1 per-feature counts
+        **({"ageBands": age_bands} if age_bands is not None else {}),
         "tagCounts": [{"key": k, "count": c} for k, c in
                       sorted(tag_counts.items(), key=lambda kv: -kv[1])],
         "filterDimensions": [

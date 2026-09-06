@@ -6,7 +6,8 @@ anything not stated here is an implementation detail free to change.
 ## Endpoints
 
 ```
-POST   /jobs      { id, query, maxsize?, timeout?, filterableTags? }
+POST   /jobs      { id, query, maxsize?, timeout?, filterableTags?,
+                    keepMeta?, ageBandsDays? }
                   -> 202 { id, state: "queued" }
                   -> 200 { id, state }        idempotent resubmit of a known id
                   -> 400 / 413                validation failures
@@ -45,6 +46,16 @@ disk, `diskFreeBytes` the free space beside it.
   through unchanged.
 - `filterableTags` — optional, up to 32 tag keys; selects the keys
   reported as `filterDimensions` in the stats.
+- `keepMeta` — optional boolean. When true, `data.ndjson` features also
+  carry `@user`, `@uid`, `@timestamp` (ISO string), `@version`,
+  `@changeset` when the element has them. The archive is unaffected —
+  the bake excludes these five keys from tiles, so `output.pmtiles` is
+  byte-equivalent to a non-keepMeta job.
+- `ageBandsDays` — optional ascending list of up to 8 day cutoffs
+  (1–36500). Adds `ageBands` to the stats: per-FEATURE counts, one
+  bucket per cutoff plus a final "older" bucket. Undated features
+  (member nodes, timestamp-less elements) count in the final bucket —
+  unlike `editRecencyBands`, which counts dated elements only.
 
 ## Job lifecycle
 
@@ -102,6 +113,7 @@ don't understand.
 | `recentActivity` | `{elementsEdited, changesets, editors}` within the first recency band |
 | `qualityMetrics` | stale = older than the last band, fresh = within the second; counts + percentages |
 | `editRecencyBands` | element counts per band, plus an "older" bucket (4 entries) |
+| `ageBands` | only when `ageBandsDays` was requested: per-feature counts per cutoff plus a final "older" bucket (undated features included there) |
 | `mapperRecencyBands` | editors bucketed by their latest edit (4 entries) |
 | `tagCounts` | `[{key, count}]`, descending |
 | `filterDimensions` | per requested key: `{key, kind:"tag", values:[{value, count}], missing}` — values case-folded with dominant original casing, `;`-split, zero-value keys kept |
