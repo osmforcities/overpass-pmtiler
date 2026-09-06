@@ -1,9 +1,13 @@
 # Example systemd unit -- install to /etc/systemd/system/pmtiler.service,
 # then: systemctl daemon-reload && systemctl enable --now pmtiler
 #
-# Assumes a dedicated user and a checkout at /opt/pmtiler:
+# Assumes a dedicated user and a checkout at /opt/pmtiler pinned to a tag
+# (no build step):
 #   useradd --system --home /var/lib/pmtiler pmtiler
 #   install -d -o pmtiler /var/lib/pmtiler/spool
+#
+# Upgrade: fetch, check out the new tag, systemctl restart pmtiler --
+# crash recovery re-queues any job the restart interrupted.
 
 [Unit]
 Description=overpass-pmtiler: Overpass query -> PMTiles archive

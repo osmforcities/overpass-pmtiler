@@ -33,6 +33,10 @@
 <script>
 // Render harness for a baked job, derived from spike/tile-harness.html.
 // Served by pmtiler itself so the archive is same-origin (range requests).
+// Deliberately one dependency-free HTML file with two CDN scripts, not a
+// bundled app: no build step before serving, nothing to rebuild on deploy.
+// Reach for a bundler only if this grows past a couple of views or must
+// serve its assets locally.
 const hud = document.getElementById("hud");
 const jobId = new URLSearchParams(location.search).get("job");
 
