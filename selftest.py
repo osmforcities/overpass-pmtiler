@@ -11,7 +11,7 @@ from bake import PROGRESS_RE, validate_pmtiles
 from config import DAY, now_iso
 from convert import brace_delta, convert, is_area
 from errors import Aborted, StageError
-from overpass import apply_settings, html_error, tail_remark
+from overpass import apply_settings, classify_error, html_error, tail_remark
 from runner import Q, recover
 from spool import (job_directory, progress_writer, read_job, sweep,
                    write_job)
@@ -307,6 +307,17 @@ def selftest():
             "<html><p>copyright boilerplate</p>"
             "<p><b>Error</b>: line 1: Unknown type &quot;this&quot;</p></html>"
         ) == 'Error : line 1: Unknown type "this"'
+
+        # over-ceiling failures classify as too_large; anything else stays
+        # unclassified (retryable by the caller)
+        assert classify_error(
+            "runtime error: Query run out of memory using about 2048 MB "
+            "of RAM.") == "too_large"
+        assert classify_error(
+            "runtime error: open64: 0 Success /osm3s_areas "
+            "Dispatcher_Client::request_read_and_idx::timeout") == "too_large"
+        assert classify_error("Error: line 1: parse error") is None
+        assert classify_error("overpass read timed out after 240s") is None
 
         # string-aware brace counting: braces in tag values are data
         assert brace_delta(b'    "note": "curly { brace",') == 0

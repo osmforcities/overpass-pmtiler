@@ -54,7 +54,11 @@ DELETE /jobs/:id               (ack -> cleanup)
   counts within the first band, and `qualityMetrics` calls elements fresh
   within the second band and stale beyond the last. The output is
   self-describing — no consumer needs out-of-band knowledge of the cutoffs.
-- `failed` carries the Overpass (or stage) error text through.
+- `failed` carries the Overpass (or stage) error text through. When the
+  failure is recognizably an over-the-ceiling refusal (the areas dispatcher
+  or a `[maxsize:]` out-of-memory), the record additionally carries
+  `errorKind: "too_large"` — permanent for that query, do not retry. A
+  failure without `errorKind` is unclassified and may be transient.
 - A periodic sweep removes jobs older than a configurable age regardless
   of ack.
 

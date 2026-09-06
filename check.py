@@ -64,7 +64,17 @@ if not LIVE:
             end = query.find(";")
             if query.startswith("[") and end != -1:
                 query = query[end + 1:]
-            if "nothing_matches" in query:
+            if "huge_area" in query:
+                # over-ceiling: Overpass answers 200 with a runtime remark
+                body = ('{\n  "elements": [\n  ],\n  "remark": "runtime error:'
+                        ' Query run out of memory using about 2048 MB of'
+                        ' RAM."\n}\n').encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif "nothing_matches" in query:
                 body = b'{\n  "elements": [\n  ]\n}\n'  # valid, zero elements
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -343,6 +353,19 @@ def main():
             job, _ = poll(base, empty["id"])
             assert job["state"] == "failed", job
             assert job.get("error") == "query matched no elements", job
+
+        # --- over-ceiling failures carry a machine-readable errorKind;
+        # unclassified failures (check-broken above) carry none
+        if not LIVE:
+            huge = {"id": "check-huge",
+                    "query": "huge_area out;", "timeout": 30}
+            assert call(base, "POST", "/jobs", huge)[0] == 202
+            job, _ = poll(base, huge["id"])
+            assert job["state"] == "failed", job
+            assert job.get("errorKind") == "too_large", job
+            assert "out of memory" in job.get("error", ""), job
+            broken_job = json.loads(call(base, "GET", "/jobs/check-broken")[2])
+            assert "errorKind" not in broken_job, broken_job
 
         # --- one malformed job.json must not 500 the list endpoint
         os.makedirs(os.path.join(SPOOL, "malformed"), exist_ok=True)

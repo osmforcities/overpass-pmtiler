@@ -12,7 +12,7 @@ from bake import stage_bake
 from config import RUNNING, log
 from convert import convert
 from errors import Aborted, StageError
-from overpass import stage_fetch
+from overpass import classify_error, stage_fetch
 from spool import (job_directory, progress_writer, read_job, set_state, sweep)
 
 Q = queue.Queue()
@@ -73,6 +73,12 @@ def fail(job: dict, error: str) -> None:
     # keep the run's own dict: a re-read would adopt the on-disk record's
     # generation and stomp a re-POSTed job (write_job couldn't tell them apart)
     job["error"] = error
+    if job.get("state") == "fetching":
+        # only Overpass's own refusals classify -- a bake-stage "out of
+        # memory" from tippecanoe is host pressure, not the query ceiling
+        kind = classify_error(error)
+        if kind:
+            job["errorKind"] = kind
     try:
         set_state(job, "failed")
     except Aborted:

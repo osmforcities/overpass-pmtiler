@@ -130,6 +130,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 view["progress"] = job["progress"]
             if job.get("error"):
                 view["error"] = job["error"]
+            if job.get("errorKind"):
+                view["errorKind"] = job["errorKind"]
             if job.get("stats"):
                 view["stats"] = job["stats"]
             return self.send_json(200, view)
