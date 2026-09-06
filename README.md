@@ -213,9 +213,22 @@ an idle service never sweeps.
 
 ## Deploy
 
-A single Python service plus tippecanoe (apt). Run under systemd; front
-with a reverse proxy that serves the output files with Range support.
-Example unit and nginx snippet: #8.
+Python 3 plus tippecanoe (`apt install tippecanoe`), plus a checkout of
+this repo pinned to a tag (`git clone … && git checkout vX.Y` — there is
+no build step). Run under systemd; front with a reverse proxy restricted
+to trusted clients that passes Range requests through. Working examples
+in `examples/`:
+
+- `examples/pmtiler.service` — systemd unit: dedicated user, spool under
+  `/var/lib/pmtiler`, restart on failure, and a sandbox
+  (`ProtectSystem=strict` + `ReadWritePaths=` the spool) so the service
+  can never write outside its own data. No cleanup cron — the sweep is
+  built in (`PMTILER_MAX_AGE_DAYS`).
+- `examples/nginx-pmtiler.conf` — IP-allowlisted proxy location with
+  buffering off so multi-MB archives and Range reads stream through.
+
+To upgrade: fetch, check out the new tag, `systemctl restart pmtiler` —
+crash recovery re-queues any job the restart interrupted.
 
 ## Compatibility targets
 
