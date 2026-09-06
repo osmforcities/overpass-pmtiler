@@ -414,7 +414,9 @@ def main():
         for row in rows:
             assert "progress" not in row or row["progress"], row
             assert "errorKind" not in row or row["errorKind"], row
-        assert any(row.get("errorKind") == "too_large" for row in rows), rows
+        if not LIVE:  # check-huge (the too_large job) only exists offline
+            assert any(row.get("errorKind") == "too_large"
+                       for row in rows), rows
         shutil.rmtree(os.path.join(SPOOL, "malformed"))
 
         # --- /status: the dashboard + monitoring surface
