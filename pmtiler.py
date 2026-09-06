@@ -132,11 +132,18 @@ def read_job(jid):
     try:
         with open(os.path.join(jobdir(jid), "job.json"), encoding="utf-8") as f:
             return json.load(f)
-    except (OSError, ValueError):
+    except FileNotFoundError:  # absent is normal (idempotency checks, 404s)
+        return None
+    except (OSError, ValueError) as e:
+        # corrupt is not: without this line the job silently vanishes from
+        # /jobs, recover() skips it forever and sweep waits MAX_AGE_DAYS
+        log("unreadable job.json for", jid, "-", "%s: %s" % (type(e).__name__, e))
         return None
 
 
 def write_job(job):
+    # tmp + os.replace makes every read see a whole record: the reason
+    # job.json needs no lock across threads. Never write it in place.
     jd = jobdir(job["id"])
     if not os.path.isdir(jd):
         raise Aborted(job["id"])
@@ -193,8 +200,7 @@ def recover():
         if not job:
             continue
         if job.get("state") in RUNNING:
-            job["state"] = "queued"
-            write_job(job)
+            set_state(job, "queued")  # via set_state so stale progress clears
             log("recovered", name)
         if job.get("state") == "queued":
             pending.append(job)
@@ -866,11 +872,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path in ("/", "/viewer.html"):  # visual inspection, same-origin
             return self.send_file(os.path.join(HERE, "viewer.html"), "text/html")
         if path == "/jobs":
+            # .get() throughout: one malformed job.json must not 500 the list
             return self.send_json(200, sorted(
-                ({"id": j["id"], "state": j["state"], "startedAt": j["startedAt"],
-                  "progress": j.get("progress")}
+                ({"id": j.get("id"), "state": j.get("state"),
+                  "startedAt": j.get("startedAt"), "progress": j.get("progress")}
                  for j in filter(None, map(read_job, os.listdir(SPOOL)))),
-                key=lambda j: j["startedAt"], reverse=True))
+                key=lambda j: j["startedAt"] or "", reverse=True))
         jid, name = self.parse()
         if not jid:
             return self.err(404, "not found")
@@ -1296,6 +1303,23 @@ def selftest():
             sweep()
             assert not os.path.isdir(jobdir("stale"))
             assert os.path.isdir(jobdir("fresh"))
+
+            # recover: running states requeue FIFO with stale progress
+            # cleared; a corrupt record is skipped (and logged), not fatal
+            os.makedirs(jobdir("bad"))
+            with open(os.path.join(jobdir("bad"), "job.json"), "w") as f:
+                f.write("not json")
+            for jid, state, ts in (("r2", "baking", "2001-02"),
+                                   ("r1", "fetching", "2001-01")):
+                os.makedirs(jobdir(jid))
+                write_job({"id": jid, "state": state, "startedAt": ts,
+                           "progress": {"stage": state, "pct": 80}})
+            recover()
+            order = [Q.get_nowait() for _ in range(3)]
+            assert order == ["r1", "r2", "j1"], order  # j1: still-queued above
+            assert Q.empty()
+            r1 = read_job("r1")
+            assert r1["state"] == "queued" and "progress" not in r1, r1
         finally:
             SPOOL = old_spool
 
