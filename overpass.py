@@ -20,69 +20,71 @@ SETTING_RE = re.compile(r"\[\s*(?:maxsize|timeout)\s*:\s*\d+\s*\]", re.I)
 # anchored to the pretty-printer's top-level indent: an element's remark=* TAG
 # sits deeper and must not fail a successful fetch
 REMARK_RE = re.compile(r'^  "remark"\s*:\s*"((?:[^"\\]|\\.)*)"', re.M)
-TAG_RE = re.compile(r"<[^>]+>")
+HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
-def apply_settings(query, maxsize, timeout):
+def apply_settings(query: str, maxsize: int | None, timeout: int | None) -> str:
     """Merge [maxsize:]/[timeout:] into the query's leading settings statement."""
-    q = query.strip()
+    stripped = query.strip()
     extra = ""
     if maxsize:
         extra += "[maxsize:%d]" % maxsize
     if timeout:
         extra += "[timeout:%d]" % timeout
     if not extra:
-        return q
-    end = q.find(";")
-    if q.startswith("[") and end != -1:
-        return SETTING_RE.sub("", q[:end]) + extra + q[end:]
-    return "[out:json]" + extra + ";" + q
+        return stripped
+    settings_end = stripped.find(";")
+    if stripped.startswith("[") and settings_end != -1:
+        return (SETTING_RE.sub("", stripped[:settings_end]) + extra
+                + stripped[settings_end:])
+    return "[out:json]" + extra + ";" + stripped
 
 
-def html_error(body):
+def html_error(body: str) -> str:
     """Overpass returns its error text inside an HTML page, after boilerplate."""
-    text = re.sub(r"\s+", " ", html.unescape(TAG_RE.sub(" ", body))).strip()
-    m = re.search(r"Error\s*:", text)  # tag stripping leaves "<b>Error</b>:" spaced
-    if m:
-        text = text[m.start():]
+    text = re.sub(r"\s+", " ", html.unescape(HTML_TAG_RE.sub(" ", body))).strip()
+    match = re.search(r"Error\s*:", text)  # stripping leaves "<b>Error</b>:" spaced
+    if match:
+        text = text[match.start():]
     return text[:2000] or "overpass returned an error"
 
 
-def tail_remark(path):
+def tail_remark(path: str) -> str | None:
     """Overpass reports runtime errors as a "remark" key in an otherwise-200 body."""
     size = os.path.getsize(path)
     with open(path, "rb") as f:
         f.seek(max(0, size - 8192))
         tail = f.read().decode("utf-8", "replace")
-    m = REMARK_RE.search(tail)
-    return m.group(1) if m else None
+    match = REMARK_RE.search(tail)
+    return match.group(1) if match else None
 
 
-def stage_fetch(job, path):
+def stage_fetch(job: dict, path: str) -> None:
     query = apply_settings(job["query"], job.get("maxsize"), job.get("timeout"))
-    data = urllib.parse.urlencode({"data": query}).encode()
-    req = urllib.request.Request(
-        config.OVERPASS, data=data,
+    form_body = urllib.parse.urlencode({"data": query}).encode()
+    request = urllib.request.Request(
+        config.OVERPASS, data=form_body,
         headers={"Content-Type": "application/x-www-form-urlencoded"})
-    ctx = ssl._create_unverified_context() if config.INSECURE else None
+    ssl_context = ssl._create_unverified_context() if config.INSECURE else None
     tick = progress_writer(job, "fetching")
     try:
         with urllib.request.urlopen(
-                req, context=ctx, timeout=(job.get("timeout") or 180) + 60) as r, \
+                request, context=ssl_context,
+                timeout=(job.get("timeout") or 180) + 60) as response, \
                 open(path, "wb") as out:
-            got = 0
+            received = 0
             while True:
-                chunk = r.read(1024 * 1024)
+                chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
                 out.write(chunk)
-                got += len(chunk)
+                received += len(chunk)
                 # no total: Overpass answers chunked, there is no Content-Length
-                tick(bytes=got)
-    except urllib.error.HTTPError as e:
-        raise StageError(html_error(e.read().decode("utf-8", "replace")))
-    except urllib.error.URLError as e:
-        raise StageError("overpass unreachable: %s" % (e.reason,))
+                tick(bytes=received)
+    except urllib.error.HTTPError as error:
+        raise StageError(html_error(error.read().decode("utf-8", "replace")))
+    except urllib.error.URLError as error:
+        raise StageError("overpass unreachable: %s" % (error.reason,))
     except TimeoutError:
         raise StageError("overpass read timed out after %ds"
                          % ((job.get("timeout") or 180) + 60))
