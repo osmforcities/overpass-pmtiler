@@ -712,6 +712,7 @@ def stage_bake(job, jd):
     finally:
         if p.poll() is None:  # abort mid-bake: don't orphan the subprocess
             p.kill()
+            p.wait()
     validate_pmtiles(out)
     log("baked", job["id"], os.path.getsize(out), "bytes")
 
