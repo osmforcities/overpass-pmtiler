@@ -13,13 +13,12 @@ from config import RUNNING, log
 from convert import convert
 from errors import Aborted, StageError
 from overpass import stage_fetch
-from spool import (job_directory as jobdir, progress_writer, read_job,
-                   set_state, sweep)
+from spool import (job_directory, progress_writer, read_job, set_state, sweep)
 
 Q = queue.Queue()
 
 
-def recover():
+def recover() -> None:
     """Crash recovery: running states go back to queued, then re-enqueue FIFO."""
     pending = []
     for name in os.listdir(config.SPOOL):
@@ -35,41 +34,42 @@ def recover():
         Q.put(job["id"])
 
 
-def run_job(jid):
-    job = read_job(jid)
+def run_job(job_id: str) -> None:
+    job = read_job(job_id)
     if not job:
         return
-    jd = jobdir(jid)
-    raw = os.path.join(jd, "raw.json")
+    job_dir = job_directory(job_id)
+    raw_path = os.path.join(job_dir, "raw.json")
     try:
         set_state(job, "fetching")
-        stage_fetch(job, raw)
+        stage_fetch(job, raw_path)
 
         set_state(job, "converting")
-        stats = convert(raw, os.path.join(jd, "data.ndjson"),
+        stats = convert(raw_path, os.path.join(job_dir, "data.ndjson"),
                         progress_writer(job, "converting"),
                         filter_keys=job.get("filterableTags") or [])
-        with open(os.path.join(jd, "stats.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(job_dir, "stats.json"), "w",
+                  encoding="utf-8") as f:
             json.dump(stats, f)
         job["stats"] = stats
-        os.remove(raw)  # ~2 GB at metro scale; the nd-geojson supersedes it
+        os.remove(raw_path)  # ~2 GB at metro scale; the nd-geojson supersedes it
         if not stats["features"]:
             # fail here with the real cause; tippecanoe would exit nonzero
             # with "Did not read any valid geometries" two stages later
             raise StageError("query matched no elements")
 
         set_state(job, "baking")
-        stage_bake(job, jd)
+        stage_bake(job, job_dir)
         set_state(job, "done")
     except Aborted:
-        log("job", jid, "aborted (deleted)")
-    except StageError as e:
-        fail(job, str(e))
-    except Exception as e:
-        fail(job, "%s: %s" % (type(e).__name__, e))
+        log("job", job_id, "aborted (deleted)")
+    except StageError as error:
+        fail(job, str(error))
+    except Exception as error:
+        fail(job, "%s: %s" % (type(error).__name__, error))
 
 
-def fail(job, error):
+def fail(job: dict, error: str) -> None:
     # keep the run's own dict: a re-read would adopt the on-disk record's
     # generation and stomp a re-POSTed job (write_job couldn't tell them apart)
     job["error"] = error
@@ -80,15 +80,16 @@ def fail(job, error):
     log("job", job["id"], "failed:", error[:200])
 
 
-def worker():
+def worker() -> None:
     while True:
-        jid = Q.get()
+        job_id = Q.get()
         try:
-            run_job(jid)
+            run_job(job_id)
             sweep()
-        except Exception as e:
+        except Exception as error:
             # a sweep()/fail() error must not kill the only worker thread --
             # the HTTP surface would keep queueing jobs nobody runs
-            log("worker error on", jid, "-", "%s: %s" % (type(e).__name__, e))
+            log("worker error on", job_id, "-",
+                "%s: %s" % (type(error).__name__, error))
         finally:
             Q.task_done()
