@@ -66,6 +66,10 @@ DELETE /jobs/:id               (ack -> cleanup)
   settings block (overriding any already present) and prepends `[out:json]`
   if the query has no settings block at all; if neither is supplied, the
   query passes through unchanged.
+- The response must be Overpass's own pretty-printed JSON — the streaming
+  converter splits elements on its line structure (string-aware, so braces
+  inside tag values are data). Compact or foreign JSON fails the job at the
+  convert stage with a format error instead of baking an empty archive.
 - Only `type=multipolygon`/`boundary` relations are assembled; other
   relation types are counted in `relationsSkipped`, never emitted.
 - The archive has a single tile layer named `features`.
