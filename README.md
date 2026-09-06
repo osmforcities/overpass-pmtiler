@@ -72,6 +72,12 @@ DELETE /jobs/:id               (ack -> cleanup)
 - Every feature carries `_ts`, a numeric epoch of its last edit (`0` for
   undated relation member nodes) — numeric so tile-side style expressions
   can bucket on it directly.
+- `DELETE` aborts a running job: the worker notices on its next progress
+  write or state change and the stage unwinds (a mid-bake abort kills the
+  tippecanoe subprocess). Immediately re-POSTing a deleted id is safe —
+  the recreated record carries a fresh `startedAt`, which is the run's
+  generation, and a stale run strands on the mismatch instead of writing
+  into the new job's directory.
 
 ## Design principles
 
