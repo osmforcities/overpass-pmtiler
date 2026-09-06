@@ -35,9 +35,9 @@ EARTH_R = 6371008.8  # turf's sphere radius: measures match @turf/length+area
 MAX_FILTER_KEYS = 32
 
 
-def now_iso():
+def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def log(*a):
-    print(now_iso(), *a, flush=True)
+def log(*parts) -> None:
+    print(now_iso(), *parts, flush=True)

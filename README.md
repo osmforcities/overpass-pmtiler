@@ -136,7 +136,21 @@ The Sao Paulo row was reproduced end to end on a laptop over an SSH tunnel
 
 ## Running it
 
-`pmtiler.py` is the whole service — Python 3 stdlib plus `tippecanoe` on PATH.
+The service is Python 3 stdlib plus `tippecanoe` on PATH — flat modules in
+the repo root, one per concern, with `pmtiler.py` as the entry point:
+
+```
+pmtiler.py    entry: serve or --selftest; re-exports convert + FIXTURE
+config.py     env configuration, shared constants, logging helpers
+errors.py     StageError, Aborted (the abort seam)
+spool.py      job records on disk, progress, sweep
+overpass.py   the fetch stage, query settings, Overpass error extraction
+convert.py    the streaming converter, polygon rules, geometry math
+bake.py       the tippecanoe stage, archive validation
+runner.py     work queue, crash recovery, the serial worker
+server.py     the HTTP surface
+selftest.py   converter + spool self-checks
+```
 Everything is configured by env var:
 
 ```
@@ -224,7 +238,7 @@ Exits nonzero on any mismatch, printing at most 20 per kind:
     PMTILER_APP_DIR=../app python3 oracle_compare.py fixtures/delft-mixed.json
 
 Re-run it whenever the pinned osmtogeojson target bumps (and regenerate
-`POLYGON_FEATURES` in `pmtiler.py` from the new package first) — nothing
+`POLYGON_FEATURES` in `convert.py` from the new package first) — nothing
 else detects the two converters drifting apart.
 
 `fixtures/*.json` captures are not in git (up to 11 MB), only the
