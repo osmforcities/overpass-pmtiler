@@ -10,6 +10,7 @@ import math
 import os
 import resource
 import time
+from collections.abc import Callable, Iterable
 
 from config import BANDS, DAY, EARTH_R
 from errors import StageError
@@ -60,7 +61,7 @@ POLYGON_FEATURES = {
 }
 
 
-def is_area(tags):
+def is_area(tags: dict) -> bool:
     """Do these tags make a closed way an area? osmtogeojson's _isPolygonFeature,
     mirrored -- the purely geometric test fills roundabouts and closed cycleway
     loops, diverging from what consumers migrating off client-side conversion
@@ -69,22 +70,22 @@ def is_area(tags):
     """
     if tags.get("area") == "no":
         return False
-    for key, val in tags.items():
+    for key, value in tags.items():
         rule = POLYGON_FEATURES.get(key)
-        if rule is None or val == "no":  # building=no is not an area
+        if rule is None or value == "no":  # building=no is not an area
             continue
         if rule is True:
             return True
         mode, values = rule
-        if (val in values) if mode == "in" else (val not in values):
+        if (value in values) if mode == "in" else (value not in values):
             return True
     return False
 
 
-def ring_contains(ring, pt):
+def ring_contains(ring: list, point: list) -> bool:
     """Ray cast: point inside closed ring? Boundary hits are either/or, which is
     fine for assigning inner rings -- they sit strictly inside their outer."""
-    x, y = pt
+    x, y = point
     inside = False
     for i in range(len(ring) - 1):
         x1, y1 = ring[i]
@@ -94,44 +95,47 @@ def ring_contains(ring, pt):
     return inside
 
 
-def stitch(segments):
+def stitch(segments: list) -> list:
     """Join way fragments into closed rings.
 
     Fragments arrive in arbitrary order and direction, so grow each ring by
     endpoint lookup, reversing segments as needed. Fragments that never close
     are dropped -- broken relations are routine in real OSM data.
     """
-    rings, opens = [], []
-    for s in segments:
-        if len(s) >= 4 and s[0] == s[-1]:
-            rings.append(s)
-        elif len(s) >= 2:
-            opens.append(s)
-    ends = {}
-    for i, s in enumerate(opens):
-        ends.setdefault(tuple(s[0]), []).append(i)
-        ends.setdefault(tuple(s[-1]), []).append(i)
-    used = [False] * len(opens)
-    for i, seg in enumerate(opens):
+    rings, open_segments = [], []
+    for segment in segments:
+        if len(segment) >= 4 and segment[0] == segment[-1]:
+            rings.append(segment)
+        elif len(segment) >= 2:
+            open_segments.append(segment)
+    endpoints = {}
+    for i, segment in enumerate(open_segments):
+        endpoints.setdefault(tuple(segment[0]), []).append(i)
+        endpoints.setdefault(tuple(segment[-1]), []).append(i)
+    used = [False] * len(open_segments)
+    for i, segment in enumerate(open_segments):
         if used[i]:
             continue
         used[i] = True
-        ring = list(seg)
+        ring = list(segment)
         while ring[0] != ring[-1]:
             # ponytail: greedy pick when 3+ fragments meet at one endpoint --
             # touching rings can mis-stitch. Backtracking join if fixtures hit it.
-            j = next((k for k in ends.get(tuple(ring[-1]), []) if not used[k]), None)
-            if j is None:
+            match_index = next(
+                (k for k in endpoints.get(tuple(ring[-1]), []) if not used[k]),
+                None)
+            if match_index is None:
                 break
-            used[j] = True
-            nxt = opens[j]
-            ring.extend(nxt[1:] if nxt[0] == ring[-1] else reversed(nxt[:-1]))
+            used[match_index] = True
+            next_segment = open_segments[match_index]
+            ring.extend(next_segment[1:] if next_segment[0] == ring[-1]
+                        else reversed(next_segment[:-1]))
         if len(ring) >= 4 and ring[0] == ring[-1]:
             rings.append(ring)
     return rings
 
 
-def assemble_relation(el):
+def assemble_relation(element: dict) -> tuple | None:
     """type=multipolygon/boundary -> (geometry, flat_coords, member_nodes);
     any other type or an unassemblable relation -> None (callers count it;
     never crash a bake). The blanket except below also turns coding bugs into
@@ -148,76 +152,82 @@ def assemble_relation(el):
     node id seen.
     """
     try:
-        if (el.get("tags") or {}).get("type") not in ("multipolygon", "boundary"):
+        if (element.get("tags") or {}).get("type") not in ("multipolygon",
+                                                           "boundary"):
             return None
         outers, inners, member_nodes = [], [], []
-        for m in el.get("members") or []:
-            if m.get("type") == "node" and "lat" in m:
-                member_nodes.append((m.get("ref"), m["lon"], m["lat"]))
+        for member in element.get("members") or []:
+            if member.get("type") == "node" and "lat" in member:
+                member_nodes.append((member.get("ref"), member["lon"],
+                                     member["lat"]))
                 continue
-            if m.get("type") != "way" or not m.get("geometry"):
+            if member.get("type") != "way" or not member.get("geometry"):
                 continue
-            coords = [[p["lon"], p["lat"]] for p in m["geometry"]]
-            role = m.get("role") or "outer"
+            coordinates = [[p["lon"], p["lat"]] for p in member["geometry"]]
+            role = member.get("role") or "outer"
             if role == "outer":
-                outers.append(coords)
+                outers.append(coordinates)
             elif role == "inner":
-                inners.append(coords)
-        polys = [[o] for o in stitch(outers)]
-        if not polys:
+                inners.append(coordinates)
+        polygons = [[outer] for outer in stitch(outers)]
+        if not polygons:
             return None
         for ring in stitch(inners):  # inner with no containing outer: dropped
             # ponytail: first containing outer wins -- nested outers (island in
             # lake in island) can misassign the hole. Smallest-containing if hit.
-            for poly in polys:
-                if ring_contains(poly[0], ring[0]):
-                    poly.append(ring)
+            for polygon in polygons:
+                if ring_contains(polygon[0], ring[0]):
+                    polygon.append(ring)
                     break
-        geometry = ({"type": "Polygon", "coordinates": polys[0]} if len(polys) == 1
-                    else {"type": "MultiPolygon", "coordinates": polys})
-        flat = [pt for poly in polys for ring in poly for pt in ring]
-        flat += [[lon, lat] for _, lon, lat in member_nodes]
-        return geometry, flat, member_nodes
+        geometry = ({"type": "Polygon", "coordinates": polygons[0]}
+                    if len(polygons) == 1
+                    else {"type": "MultiPolygon", "coordinates": polygons})
+        flat_coords = [point for polygon in polygons for ring in polygon
+                       for point in ring]
+        flat_coords += [[lon, lat] for _, lon, lat in member_nodes]
+        return geometry, flat_coords, member_nodes
     except Exception:
         return None
 
 
-def line_length_m(coords):
+def line_length_m(coordinates: list) -> float:
     """Haversine sum over a coordinate string -- @turf/length parity."""
     total = 0.0
-    for i in range(len(coords) - 1):
-        lon1, lat1 = coords[i]
-        lon2, lat2 = coords[i + 1]
-        a = (math.sin(math.radians(lat2 - lat1) / 2) ** 2
-             + math.sin(math.radians(lon2 - lon1) / 2) ** 2
-             * math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)))
-        total += 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)) * EARTH_R
+    for i in range(len(coordinates) - 1):
+        lon1, lat1 = coordinates[i]
+        lon2, lat2 = coordinates[i + 1]
+        haversine = (math.sin(math.radians(lat2 - lat1) / 2) ** 2
+                     + math.sin(math.radians(lon2 - lon1) / 2) ** 2
+                     * math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)))
+        total += (2 * math.atan2(math.sqrt(haversine), math.sqrt(1 - haversine))
+                  * EARTH_R)
     return total
 
 
-def ring_area_m2(ring):
+def ring_area_m2(ring: list) -> float:
     """Chamberlain-Duquette spherical excess (signed) -- @turf/area parity."""
-    n = len(ring)
-    if n <= 2:
+    point_count = len(ring)
+    if point_count <= 2:
         return 0.0
     total = 0.0
-    for i in range(n):
-        total += ((math.radians(ring[(i + 2) % n][0]) - math.radians(ring[i][0]))
-                  * math.sin(math.radians(ring[(i + 1) % n][1])))
+    for i in range(point_count):
+        total += ((math.radians(ring[(i + 2) % point_count][0])
+                   - math.radians(ring[i][0]))
+                  * math.sin(math.radians(ring[(i + 1) % point_count][1])))
     return total * EARTH_R * EARTH_R / 2
 
 
-def polygons_area_m2(polys):
+def polygons_area_m2(polygons: list) -> float:
     """Sum of per-polygon (|outer| - sum |inners|), turf's Polygon handling."""
     total = 0.0
-    for rings in polys:
+    for rings in polygons:
         total += abs(ring_area_m2(rings[0]))
         for hole in rings[1:]:
             total -= abs(ring_area_m2(hole))
     return total
 
 
-def tag_dimension(key, counts, casing, missing):
+def tag_dimension(key: str, counts: dict, casing: dict, missing: int) -> dict:
     """FilterDimension for one key: values sorted desc by count (ties keep
     first-seen order), displayed with the dominant original casing (ties
     first-seen), zero-value keys kept (keepEmpty semantics)."""
@@ -227,7 +237,7 @@ def tag_dimension(key, counts, casing, missing):
     return {"key": key, "kind": "tag", "values": values, "missing": missing}
 
 
-def brace_delta(line):
+def brace_delta(line: bytes) -> int:
     """Net {/} count outside JSON strings for one line. A JSON string cannot
     hold a literal newline, so every line starts and ends outside a string --
     per-line scanning needs no carried state. A naive count() breaks on a
@@ -251,7 +261,9 @@ def brace_delta(line):
     return depth
 
 
-def convert(inp, outp, tick=None, filter_keys=()):
+def convert(input_path: str, output_path: str,
+            tick: Callable[..., None] | None = None,
+            filter_keys: Iterable[str] = ()) -> dict:
     """Overpass JSON -> nd-geojson + accumulator stats in one bounded-memory pass.
 
     Splits the elements array on element boundaries by string-aware brace
@@ -259,9 +271,9 @@ def convert(inp, outp, tick=None, filter_keys=()):
     below), then json.loads per element: 13 MB RSS at 2.23 GB in.
     Ported from spike/convert_fast.py.
     """
-    t0 = time.time()
+    started_clock = time.time()
     now = int(time.time())
-    total = os.path.getsize(inp)  # the input is complete here, so pct is honest
+    total = os.path.getsize(input_path)  # input is complete here: pct is honest
     read = 0
     counts = {"nodes": 0, "ways": 0, "relations": 0,
               "relationsSkipped": 0, "skipped": 0}
@@ -279,7 +291,8 @@ def convert(inp, outp, tick=None, filter_keys=()):
 
     # read binary: len(line) is then exact bytes, and json.loads takes bytes, so
     # progress costs nothing (f.tell() is disabled while iterating a text file)
-    with open(inp, "rb") as f, open(outp, "w", encoding="utf-8") as out:
+    with open(input_path, "rb") as f, \
+            open(output_path, "w", encoding="utf-8") as out:
         found = False
         for line in f:  # skip the header, stop at the elements array
             read += len(line)
@@ -292,74 +305,77 @@ def convert(inp, outp, tick=None, filter_keys=()):
             raise StageError("unexpected overpass response format "
                              "(expected pretty-printed [out:json] output)")
         depth = 0
-        buf = []
+        buffered_lines = []
         for line in f:
             read += len(line)
-            s = line.strip()
+            stripped_line = line.strip()
             if depth == 0:
-                if s.startswith(b"{"):
-                    depth = brace_delta(s)
-                    buf = [s]
+                if stripped_line.startswith(b"{"):
+                    depth = brace_delta(stripped_line)
+                    buffered_lines = [stripped_line]
                     if depth:
                         continue
-                    raw = s.rstrip(b",")
-                elif s.startswith(b"]"):
+                    element_bytes = stripped_line.rstrip(b",")
+                elif stripped_line.startswith(b"]"):
                     break
                 else:
                     continue
             else:
-                buf.append(s)
-                depth += brace_delta(s)
+                buffered_lines.append(stripped_line)
+                depth += brace_delta(stripped_line)
                 if depth > 0:
                     continue
-                raw = b"".join(buf).rstrip(b",")
+                element_bytes = b"".join(buffered_lines).rstrip(b",")
             try:
-                el = json.loads(raw)
+                element = json.loads(element_bytes)
             except ValueError:
                 counts["skipped"] += 1
                 continue
 
-            kind = el.get("type")
-            tags = el.get("tags") or {}
+            kind = element.get("type")
+            tags = element.get("tags") or {}
             member_nodes = ()
-            if kind == "way" and el.get("geometry"):
-                coords = [[p["lon"], p["lat"]] for p in el["geometry"]]
+            if kind == "way" and element.get("geometry"):
+                coordinates = [[p["lon"], p["lat"]] for p in element["geometry"]]
                 # ponytail: closure by coordinate, not node id as osmtogeojson
                 # does -- out geom carries no ids. Degenerate 3-coord rings stay
                 # LineStrings here; the >3 guard also protects the ring math.
-                closed = (len(coords) > 3 and coords[0] == coords[-1]
+                closed = (len(coordinates) > 3
+                          and coordinates[0] == coordinates[-1]
                           and is_area(tags))
-                geometry = ({"type": "Polygon", "coordinates": [coords]} if closed
-                            else {"type": "LineString", "coordinates": coords})
+                geometry = ({"type": "Polygon", "coordinates": [coordinates]}
+                            if closed
+                            else {"type": "LineString",
+                                  "coordinates": coordinates})
                 counts["ways"] += 1
-            elif kind == "node" and "lat" in el:
-                coords = [[el["lon"], el["lat"]]]
-                geometry = {"type": "Point", "coordinates": coords[0]}
+            elif kind == "node" and "lat" in element:
+                coordinates = [[element["lon"], element["lat"]]]
+                geometry = {"type": "Point", "coordinates": coordinates[0]}
                 counts["nodes"] += 1
             elif kind == "relation":
-                assembled = assemble_relation(el)
+                assembled = assemble_relation(element)
                 if not assembled:
                     counts["relationsSkipped"] += 1
                     continue
-                geometry, coords, member_nodes = assembled
+                geometry, coordinates, member_nodes = assembled
                 counts["relations"] += 1
             else:
                 counts["skipped"] += 1
                 continue
 
-            gt = geometry["type"]
-            if gt == "Point":
+            geometry_type = geometry["type"]
+            if geometry_type == "Point":
                 mix["points"] += 1
-            elif gt == "LineString":
+            elif geometry_type == "LineString":
                 mix["lines"] += 1
-                mix["lineKm"] += line_length_m(coords) / 1000.0
+                mix["lineKm"] += line_length_m(coordinates) / 1000.0
             else:
                 mix["areas"] += 1
                 mix["areaKm2"] += polygons_area_m2(
-                    geometry["coordinates"] if gt == "MultiPolygon"
+                    geometry["coordinates"] if geometry_type == "MultiPolygon"
                     else [geometry["coordinates"]]) / 1e6
 
-            for lon, lat in coords:
+            for lon, lat in coordinates:
                 if lon < bbox[0]:
                     bbox[0] = lon
                 if lat < bbox[1]:
@@ -369,60 +385,60 @@ def convert(inp, outp, tick=None, filter_keys=()):
                 if lat > bbox[3]:
                     bbox[3] = lat
 
-            user = el.get("user")
+            user = element.get("user")
             if user:
                 editors.add(user)
-            if el.get("changeset"):
-                changesets.add(el["changeset"])
-            version_sum += el.get("version") or 0
+            if element.get("changeset"):
+                changesets.add(element["changeset"])
+            version_sum += element.get("version") or 0
 
-            ts_iso = el.get("timestamp") or ""
-            ts = 0
-            if ts_iso:
-                ts = int(datetime.datetime.fromisoformat(
-                    ts_iso.replace("Z", "+00:00")).timestamp())
-                age = now - ts
+            timestamp_iso = element.get("timestamp") or ""
+            timestamp = 0
+            if timestamp_iso:
+                timestamp = int(datetime.datetime.fromisoformat(
+                    timestamp_iso.replace("Z", "+00:00")).timestamp())
+                age = now - timestamp
                 dated += 1
                 age_sum += age
-                oldest = ts if oldest is None or ts < oldest else oldest
-                newest = ts if newest is None or ts > newest else newest
-                edit_bands[sum(age > b for b in BANDS)] += 1
+                oldest = timestamp if oldest is None or timestamp < oldest else oldest
+                newest = timestamp if newest is None or timestamp > newest else newest
+                edit_bands[sum(age > band for band in BANDS)] += 1
                 if age <= BANDS[0]:
                     recent_edits += 1
                     if user:
                         recent_editors.add(user)
-                    if el.get("changeset"):
-                        recent_changesets.add(el["changeset"])
+                    if element.get("changeset"):
+                        recent_changesets.add(element["changeset"])
                 if age > BANDS[2]:
                     stale += 1
                 if age <= BANDS[1]:
                     fresh += 1
-                if user and ts > mapper_latest.get(user, 0):
-                    mapper_latest[user] = ts
+                if user and timestamp > mapper_latest.get(user, 0):
+                    mapper_latest[user] = timestamp
 
             for key in tags:
                 tag_counts[key] = tag_counts.get(key, 0) + 1
 
             for key in filter_keys:
-                raw = tags.get(key)
-                if raw is None:
+                raw_value = tags.get(key)
+                if raw_value is None:
                     dim_missing[key] += 1
                     continue
                 # ";"-split into separate buckets (vending=drinks;food); quirk
                 # kept on purpose: all-empty tokens fall back to the raw value
-                tokens = [t for t in (p.strip() for p in raw.split(";")) if t] \
-                    or [raw]
+                tokens = [t for t in (p.strip() for p in raw_value.split(";"))
+                          if t] or [raw_value]
                 for value in tokens:
                     lower = value.lower()
-                    kc = dim_counts[key]
-                    kc[lower] = kc.get(lower, 0) + 1
+                    key_counts = dim_counts[key]
+                    key_counts[lower] = key_counts.get(lower, 0) + 1
                     variants = dim_casing[key].setdefault(lower, {})
                     variants[value] = variants.get(value, 0) + 1
 
-            props = dict(tags)
-            props["@id"] = "%s/%s" % (kind, el["id"])
-            props["_ts"] = ts  # numeric epoch: a string breaks MapLibre `step`
-            out.write(json.dumps({"type": "Feature", "properties": props,
+            properties = dict(tags)
+            properties["@id"] = "%s/%s" % (kind, element["id"])
+            properties["_ts"] = timestamp  # numeric: a string breaks MapLibre `step`
+            out.write(json.dumps({"type": "Feature", "properties": properties,
                                   "geometry": geometry},
                                  separators=(",", ":")) + "\n")
             for ref, lon, lat in member_nodes:  # bare Points, osmtogeojson parity
@@ -441,12 +457,12 @@ def convert(inp, outp, tick=None, filter_keys=()):
 
     features = counts["nodes"] + counts["ways"] + counts["relations"]
     mapper_bands = [0, 0, 0, 0]
-    for ts in mapper_latest.values():
-        mapper_bands[sum((now - ts) > b for b in BANDS)] += 1
+    for timestamp in mapper_latest.values():
+        mapper_bands[sum((now - timestamp) > band for band in BANDS)] += 1
     pct = (lambda n: round(100.0 * n / features, 2)) if features else (lambda n: 0.0)
     return {
         "schemaVersion": 1,  # cross-repo contract: bump on removals/meaning changes
-        "recencyBandsDays": [b // DAY for b in BANDS],
+        "recencyBandsDays": [band // DAY for band in BANDS],
         "features": features,
         **counts,
         "editorsCount": len(editors),
@@ -472,13 +488,13 @@ def convert(inp, outp, tick=None, filter_keys=()):
             for k in filter_keys],
         "geometryMix": mix,
         "bbox": bbox if features else None,
-        "seconds": round(time.time() - t0, 1),
+        "seconds": round(time.time() - started_clock, 1),
         "peakRssMB": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // (1024 * 1024),
     }
 
 
-def iso(ts):
-    if not ts:
+def iso(timestamp: int | None) -> str | None:
+    if not timestamp:
         return None
     return datetime.datetime.fromtimestamp(
-        ts, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        timestamp, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
