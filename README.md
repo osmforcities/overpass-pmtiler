@@ -42,16 +42,36 @@ DELETE /jobs/:id               (ack -> cleanup)
   as `filterDimensions` in the stats: per-value counts (case-folded, with
   the dominant original casing displayed; `;`-separated values split into
   separate buckets) plus a `missing` count per key. Keys with zero values
-  are kept — a 100%-missing key is a finding, not noise. Mirrors the app's
-  `computeFilterDimensions(..., { keepEmpty: true })`. No `age` dimension
+  are kept — a 100%-missing key is a finding, not noise. No `age` dimension
   is emitted: tiles carry raw `_ts`, and the stats' `editRecencyBands`
   cover age, so age bucketing stays a consumer concern.
 - `stats.json` leads with `schemaVersion` (int, currently `1`): additive
   fields don't bump it, removals or meaning changes do. A consumer reads it
   first and refuses what it doesn't understand.
+- `recencyBandsDays` (currently `[90, 365, 730]`) states the cutoffs behind
+  every recency-derived field: `editRecencyBands` / `mapperRecencyBands`
+  bucket by those thresholds (plus an "older" bucket), `recentActivity`
+  counts within the first band, and `qualityMetrics` calls elements fresh
+  within the second band and stale beyond the last. The output is
+  self-describing — no consumer needs out-of-band knowledge of the cutoffs.
 - `failed` carries the Overpass (or stage) error text through.
 - A periodic sweep removes jobs older than a configurable age regardless
   of ack.
+
+### Interface invariants
+
+- The query must produce Overpass JSON with inline geometry: `[out:json]`
+  settings and `out geom` statements. When the request supplies `maxsize`/
+  `timeout`, the service injects `[maxsize:]`/`[timeout:]` into the query's
+  settings block (overriding any already present) and prepends `[out:json]`
+  if the query has no settings block at all; if neither is supplied, the
+  query passes through unchanged.
+- Only `type=multipolygon`/`boundary` relations are assembled; other
+  relation types are counted in `relationsSkipped`, never emitted.
+- The archive has a single tile layer named `features`.
+- Every feature carries `_ts`, a numeric epoch of its last edit (`0` for
+  undated relation member nodes) — numeric so tile-side style expressions
+  can bucket on it directly.
 
 ## Design principles
 
@@ -159,7 +179,7 @@ they render in the oldest age band and have no meta. `stats.json` carries
 sets `filterableTags`, `filterDimensions` (#11) — both accumulated in the
 convert pass over full-fidelity data, never from tiles. Length and area use
 turf's spherical formulas (haversine + Chamberlain–Duquette, R=6371008.8) so
-the numbers match the app's turf-computed stored stats bit-for-bit.
+the numbers match `@turf/length` / `@turf/area` bit-for-bit.
 The stale-job sweep runs at startup and after each job rather than on a timer;
 an idle service never sweeps.
 
@@ -169,19 +189,31 @@ A single Python service plus tippecanoe (apt). Run under systemd; front
 with a reverse proxy that serves the output files with Range support.
 Example unit and nginx snippet: #8.
 
-## Parity checking
+## Compatibility targets
 
-`oracle_compare.py` diffs `convert()` against `osmtogeojson` on a captured
-fixture — feature counts per element type, geometry type for every shared
-feature, ring signatures for relations (rotation and winding insensitive).
-osmtogeojson is resolved via npx from the app checkout, so the exact version
-the app depends on is the oracle; point `PMTILER_APP_DIR` at it when the app
-is not a sibling of this repo. Exits nonzero on any mismatch, printing at
-most 20 per kind:
+The service's outputs are defined against two ecosystem standards, not
+against any consumer:
+
+- **Conversion** is osmtogeojson-0.9.2-compatible: same polygon-detection
+  ruleset (vendored osm-polygon-features), same relation assembly, same
+  member-node emission. Anyone migrating off client-side osmtogeojson gets
+  identical feature counts and geometry types.
+- **Measures** (`geometryMix.lineKm`/`areaKm2`) are `@turf`-compatible
+  spherical geodesy, bit-for-bit.
+
+osmforcities is the first consumer and leaned on this bit-parity while
+migrating off client-side conversion; the contracts stand on their own.
+
+`oracle_compare.py` checks the conversion target: it diffs `convert()`
+against `osmtogeojson` on a captured fixture — feature counts per element
+type, geometry type for every shared feature, ring signatures for relations
+(rotation and winding insensitive). osmtogeojson is resolved via npx from a
+neighbouring checkout that has it (`PMTILER_APP_DIR`, default `../app`).
+Exits nonzero on any mismatch, printing at most 20 per kind:
 
     PMTILER_APP_DIR=../app python3 oracle_compare.py fixtures/delft-mixed.json
 
-Re-run it whenever the app bumps osmtogeojson (and regenerate
+Re-run it whenever the pinned osmtogeojson target bumps (and regenerate
 `POLYGON_FEATURES` in `pmtiler.py` from the new package first) — nothing
 else detects the two converters drifting apart.
 

@@ -47,23 +47,24 @@ OUTPUTS = {
 }
 
 DAY = 86400
-BANDS = (90 * DAY, 365 * DAY, 730 * DAY)  # app dataset-recency.ts cutoffs
-EARTH_R = 6371008.8  # turf's sphere radius: geometryMix must match app stats
+BANDS = (90 * DAY, 365 * DAY, 730 * DAY)  # emitted as stats recencyBandsDays
+EARTH_R = 6371008.8  # turf's sphere radius: measures match @turf/length+area
 MAX_FILTER_KEYS = 32
 
 # osm-polygon-features 0.9.2, vendored (27 rules, no dependency): which tags make
 # a closed way an area. key -> True (any value) | ("in"|"ex", frozenset(values)).
 #
-# Pin to the version the app's osmtogeojson resolves (^0.9.1 -> 0.9.2), not to
-# whatever is newest: parity with the app is the contract here, so a newer table
-# would break it rather than improve it. Upstream master is also 0.9.2 as of
-# 2026-09, so the pin costs nothing today.
+# Pin to the version osmtogeojson resolves (^0.9.1 -> 0.9.2), not to whatever
+# is newest: osmtogeojson-compatible output is the contract here (see README
+# "Compatibility targets"), so a newer table would break it rather than improve
+# it. Upstream master is also 0.9.2 as of 2026-09, so the pin costs nothing
+# today.
 #
 # Check rows against that package's polygon-features.json, never against recall
 # -- the #12 review flagged railway's "platform" as a typo for "traverser",
 # which appears in neither 0.9.2 nor upstream master. Regenerate only when the
-# app bumps osmtogeojson, then re-run oracle_compare.py; nothing else
-# detects the two drifting apart.
+# pinned compatibility target bumps, then re-run oracle_compare.py; nothing
+# else detects the two drifting apart.
 POLYGON_FEATURES = {
     "building": True,
     "highway": ("in", frozenset({"services", "rest_area", "escape", "elevator"})),
@@ -352,7 +353,7 @@ def assemble_relation(el):
     emitted -- a way appears top-level iff it matched the query itself.
     Member nodes (label, admin_centre) come back as (id, lon, lat) and ARE
     emitted as bare Points: osmtogeojson does the same, and count parity with
-    the app's client-side path is the contract. Known freak divergence: a
+    osmtogeojson is the contract. Known freak divergence: a
     member node that also matched the query top-level emits twice here where
     osmtogeojson dedups by id -- streaming cannot know without holding every
     node id seen.
@@ -428,9 +429,9 @@ def polygons_area_m2(polys):
 
 
 def tag_dimension(key, counts, casing, missing):
-    """FilterDimension for one key -- app filter-dimensions.ts parity: values
-    sorted desc by count (ties keep first-seen order), displayed with the
-    dominant original casing (ties first-seen), zero-value keys kept."""
+    """FilterDimension for one key: values sorted desc by count (ties keep
+    first-seen order), displayed with the dominant original casing (ties
+    first-seen), zero-value keys kept (keepEmpty semantics)."""
     values = [{"value": max(casing[lo].items(), key=lambda vc: vc[1])[0],
                "count": c}
               for lo, c in sorted(counts.items(), key=lambda lc: -lc[1])]
@@ -586,8 +587,8 @@ def convert(inp, outp, tick=None, filter_keys=()):
                 if raw is None:
                     dim_missing[key] += 1
                     continue
-                # ";"-split into separate buckets (vending=drinks;food), with the
-                # app's quirk: all-empty tokens fall back to the raw value
+                # ";"-split into separate buckets (vending=drinks;food); quirk
+                # kept on purpose: all-empty tokens fall back to the raw value
                 tokens = [t for t in (p.strip() for p in raw.split(";")) if t] \
                     or [raw]
                 for value in tokens:
@@ -624,6 +625,7 @@ def convert(inp, outp, tick=None, filter_keys=()):
     pct = (lambda n: round(100.0 * n / features, 2)) if features else (lambda n: 0.0)
     return {
         "schemaVersion": 1,  # cross-repo contract: bump on removals/meaning changes
+        "recencyBandsDays": [b // DAY for b in BANDS],
         "features": features,
         **counts,
         "editorsCount": len(editors),
@@ -1134,6 +1136,7 @@ def selftest():
         assert feats[6]["properties"]["@id"] == "relation/7"  # boundary type
 
         assert s["schemaVersion"] == 1
+        assert s["recencyBandsDays"] == [90, 365, 730]
         assert s["features"] == 7 and s["ways"] == 2 and s["nodes"] == 2
         assert s["relations"] == 3
         # skipped relations: no type tag (4), route (8), unclosed outer (9)
