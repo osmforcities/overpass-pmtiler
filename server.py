@@ -15,7 +15,7 @@ import config
 from config import (HERE, ID_RE, MAX_FILTER_KEYS, MAX_MAXSIZE, MAX_QUERY,
                     MAX_TIMEOUT, OUTPUTS, log, now_iso)
 from runner import Q, recover, worker
-from spool import job_directory, read_job, sweep, write_job
+from spool import job_directory, list_jobs, read_job, sweep, write_job
 
 CREATE_LOCK = threading.Lock()
 STARTED_AT = time.time()
@@ -123,7 +123,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                   "text/html")
         if path == "/status":
             states = {}
-            for job in filter(None, map(read_job, os.listdir(config.SPOOL))):
+            for job in list_jobs():
                 state = job.get("state") or "unknown"
                 states[state] = states.get(state, 0) + 1
             disk = shutil.disk_usage(config.SPOOL)
@@ -136,15 +136,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "diskFreeBytes": disk.free,
             })
         if path == "/jobs":
-            # .get() throughout: one malformed job.json must not 500 the list
+            # .get() throughout: one malformed job.json must not 500 the list.
+            # Optional fields are omitted when absent, never null -- the same
+            # shape as GET /jobs/:id and the API.md contract.
+            rows = []
+            for job in list_jobs():
+                row = {"id": job.get("id"), "state": job.get("state"),
+                       "startedAt": job.get("startedAt")}
+                if job.get("progress"):
+                    row["progress"] = job["progress"]
+                if job.get("errorKind"):
+                    row["errorKind"] = job["errorKind"]
+                rows.append(row)
             return self.send_json(200, sorted(
-                ({"id": job.get("id"), "state": job.get("state"),
-                  "startedAt": job.get("startedAt"),
-                  "progress": job.get("progress"),
-                  "errorKind": job.get("errorKind")}
-                 for job in filter(None, map(read_job,
-                                             os.listdir(config.SPOOL)))),
-                key=lambda job: job["startedAt"] or "", reverse=True))
+                rows, key=lambda row: row["startedAt"] or "", reverse=True))
         job_id, output_name = self.parse_job_path()
         if not job_id:
             return self.send_error_json(404, "not found")

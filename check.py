@@ -407,7 +407,14 @@ def main():
             f.write('{"x": 1}')
         status, _, body = call(base, "GET", "/jobs")
         assert status == 200, status
-        assert any(j["id"] == JOB["id"] for j in json.loads(body)), body[:200]
+        rows = json.loads(body)
+        assert any(row["id"] == JOB["id"] for row in rows), body[:200]
+        # optional fields are omitted when absent, never null -- the same
+        # shape as GET /jobs/:id
+        for row in rows:
+            assert "progress" not in row or row["progress"], row
+            assert "errorKind" not in row or row["errorKind"], row
+        assert any(row.get("errorKind") == "too_large" for row in rows), rows
         shutil.rmtree(os.path.join(SPOOL, "malformed"))
 
         # --- /status: the dashboard + monitoring surface
