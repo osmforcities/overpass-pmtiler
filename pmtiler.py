@@ -62,7 +62,7 @@ MAX_FILTER_KEYS = 32
 # Check rows against that package's polygon-features.json, never against recall
 # -- the #12 review flagged railway's "platform" as a typo for "traverser",
 # which appears in neither 0.9.2 nor upstream master. Regenerate only when the
-# app bumps osmtogeojson, then re-run spike/oracle_compare.py; nothing else
+# app bumps osmtogeojson, then re-run oracle_compare.py; nothing else
 # detects the two drifting apart.
 POLYGON_FEATURES = {
     "building": True,
@@ -345,7 +345,7 @@ def assemble_relation(el):
     """type=multipolygon/boundary -> (geometry, flat_coords, member_nodes);
     any other type or an unassemblable relation -> None (callers count it;
     never crash a bake). The blanket except below also turns coding bugs into
-    relationsSkipped -- spike/oracle_compare.py is the detector for that.
+    relationsSkipped -- oracle_compare.py is the detector for that.
 
     Members carry inline geometry under `out geom`, so the element is
     self-contained. Member ways are consumed for ring assembly only, never

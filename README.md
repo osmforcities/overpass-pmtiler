@@ -166,8 +166,35 @@ A single Python service plus tippecanoe (apt). Run under systemd; front
 with a reverse proxy that serves the output files with Range support.
 Example unit and nginx snippet: #8.
 
-## Spike code
+## Parity checking
 
-`spike/` holds the probe scripts and render harness this design came from
-(2026-09). The baked `sp-buildings.pmtiles` (53 MB) is deliberately not in
-git — regenerate with `spike/convert_fast.py` + tippecanoe.
+`oracle_compare.py` diffs `convert()` against `osmtogeojson` on a captured
+fixture — feature counts per element type, geometry type for every shared
+feature, ring signatures for relations (rotation and winding insensitive).
+osmtogeojson is resolved via npx from the app checkout, so the exact version
+the app depends on is the oracle; point `PMTILER_APP_DIR` at it when the app
+is not a sibling of this repo. Exits nonzero on any mismatch, printing at
+most 20 per kind:
+
+    PMTILER_APP_DIR=../app python3 oracle_compare.py fixtures/delft-mixed.json
+
+Re-run it whenever the app bumps osmtogeojson (and regenerate
+`POLYGON_FEATURES` in `pmtiler.py` from the new package first) — nothing
+else detects the two converters drifting apart.
+
+`fixtures/*.json` captures are not in git (up to 11 MB), only the
+`.overpassql` that produced them. Regenerate by POSTing the query to an
+Overpass instance:
+
+    curl -sk --data-urlencode data@fixtures/delft-mixed.overpassql \
+        -o fixtures/delft-mixed.json https://localhost:8080/api/interpreter
+
+`delft-mixed` is the area-decision corpus (#12): Delft `highway`/`barrier`/
+`man_made`/`aeroway`, 14,518 ways — where the closed non-area loops live.
+The older `delft-parks`/`amsterdam-parks` captures predate query recording
+and are all `polygon: all` keys, so they exercise relations but never the
+area ruleset.
+
+This design came out of a 2026-09 spike; the probe scripts and render
+harness are pruned — findings live in this README and
+osmforcities/osmforcities#322, code in git history (`git log -- spike/`).
