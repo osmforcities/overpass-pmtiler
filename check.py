@@ -155,6 +155,8 @@ JOB = {
     "timeout": 300,
     "maxsize": 536870912,
     "filterableTags": ["building", "amenity"],
+    "keepMeta": True,
+    "ageBandsDays": [7, 30, 90],
 }
 EXPECTED_FEATURES = 39627
 STATES = {"queued", "fetching", "converting", "baking", "done", "failed"}
@@ -309,12 +311,18 @@ def main():
         assert status == 200 and json.loads(sj)["features"] == stats["features"]
         # the served file is the cross-repo surface the app consumer will pin
         assert json.loads(sj)["schemaVersion"] == 1, sj[:200]
+        # ageBandsDays was requested: cutoffs+1 per-feature buckets
+        age_bands = json.loads(sj)["ageBands"]
+        assert len(age_bands) == 4, age_bands
+        assert sum(age_bands) == stats["features"], age_bands
 
         status, _, nd = call(base, "GET", "/jobs/%s/data.ndjson" % JOB["id"])
         assert status == 200, status
         first = json.loads(nd.split(b"\n", 1)[0])
         assert first["type"] == "Feature", first
         assert isinstance(first["properties"]["_ts"], int), "_ts must be numeric epoch"
+        # keepMeta was requested: editor metadata rides in the ndjson
+        assert b'"@user"' in nd and b'"@timestamp"' in nd, "keepMeta absent"
 
         status, headers, archive = call(base, "GET", "/jobs/%s/output.pmtiles" % JOB["id"])
         assert status == 200, status
@@ -369,6 +377,14 @@ def main():
         assert call(base, "POST", "/jobs",
                     {"id": "ok", "query": "x",
                      "filterableTags": "building"})[0] == 400
+        assert call(base, "POST", "/jobs",
+                    {"id": "ok", "query": "x", "keepMeta": "yes"})[0] == 400
+        assert call(base, "POST", "/jobs",
+                    {"id": "ok", "query": "x",
+                     "ageBandsDays": [30, 7]})[0] == 400  # must ascend
+        assert call(base, "POST", "/jobs",
+                    {"id": "ok", "query": "x",
+                     "ageBandsDays": []})[0] == 400  # empty list is a mistake
 
         # --- overpass errors surface verbatim
         bad = {"id": "check-broken", "query": "this is not overpass ql", "timeout": 30}

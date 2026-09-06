@@ -278,6 +278,30 @@ def selftest():
         assert not is_area({})
         assert not is_area({"name": "nowhere"})        # unknown key
 
+        # keepMeta + ageBandsDays: opt-in per job, default output unchanged
+        assert "@user" not in features[0]["properties"], features[0]
+        assert "ageBands" not in stats
+        meta_output_path = os.path.join(scratch_dir, "meta.ndjson")
+        meta_stats = convert(source_path, meta_output_path,
+                             keep_meta=True, age_bands_days=[7, 30, 90])
+        with open(meta_output_path, encoding="utf-8") as f:
+            meta_features = [json.loads(line) for line in f]
+        first = meta_features[0]["properties"]
+        assert first["@user"] == "ada" and first["@version"] == 3, first
+        assert first["@changeset"] == 11, first
+        assert first["@timestamp"] == "2026-08-01T00:00:00Z", first
+        assert first["_ts"] and first["@id"] == "way/1", first
+        # member node stays bare: synthetic identity only, no meta to keep
+        assert meta_features[4]["properties"] == {"@id": "node/99", "_ts": 0}
+        # per-FEATURE counts, cutoffs+1 buckets; the three undated features
+        # (two skipless relations without timestamps + the member node) land
+        # in the final bucket alongside anything older than the last cutoff
+        bands = meta_stats["ageBands"]
+        assert len(bands) == 4 and sum(bands) == meta_stats["features"], bands
+        assert bands[-1] >= 3, bands
+        # ageBands is additive: the rest of the stats are unchanged
+        assert meta_stats["editRecencyBands"] == stats["editRecencyBands"]
+
         # and that convert() actually consults it: three closed rings, one shape
         area_source_path = os.path.join(scratch_dir, "areas.json")
         area_output_path = os.path.join(scratch_dir, "areas.ndjson")

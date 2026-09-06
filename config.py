@@ -36,6 +36,7 @@ DAY = 86400
 BANDS = (90 * DAY, 365 * DAY, 730 * DAY)  # emitted as stats recencyBandsDays
 EARTH_R = 6371008.8  # turf's sphere radius: measures match @turf/length+area
 MAX_FILTER_KEYS = 32
+MAX_AGE_BANDS = 8  # ageBandsDays request field: consumer-chosen age cutoffs
 
 
 def now_iso() -> str:

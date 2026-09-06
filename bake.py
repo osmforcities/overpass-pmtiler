@@ -28,8 +28,14 @@ def stage_bake(job: dict, job_dir: str) -> None:
                "--drop-densest-as-needed", "-P", "-l", "features",
                # --json-progress replaces the \r-redrawn bar with one line per
                # tick, and leaves real errors on stderr untouched
-               "--json-progress", "--progress-interval=1",
-               "-o", archive_path, os.path.join(job_dir, "data.ndjson")]
+               "--json-progress", "--progress-interval=1"]
+    if job.get("keepMeta"):
+        # Editor metadata is an nd-geojson-only affordance: keep the tiles
+        # byte-identical to a non-keepMeta bake
+        for meta_key in ("@user", "@uid", "@timestamp", "@version",
+                         "@changeset"):
+            command += ["-x", meta_key]
+    command += ["-o", archive_path, os.path.join(job_dir, "data.ndjson")]
     # tmp files stay inside the job dir, never /tmp
     process = subprocess.Popen(command, cwd=job_dir,
                                env=dict(os.environ, TMPDIR=job_dir),

@@ -12,7 +12,7 @@ import threading
 import time
 
 import config
-from config import (HERE, ID_RE, MAX_FILTER_KEYS, MAX_MAXSIZE, MAX_QUERY,
+from config import (HERE, ID_RE, MAX_AGE_BANDS, MAX_FILTER_KEYS, MAX_MAXSIZE, MAX_QUERY,
                     MAX_TIMEOUT, OUTPUTS, log, now_iso)
 from runner import Q, recover, worker
 from spool import job_directory, list_jobs, read_job, sweep, write_job
@@ -101,6 +101,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_error_json(
                 400, "filterableTags must be a list of up to %d "
                 "tag keys" % MAX_FILTER_KEYS)
+        keep_meta = request.get("keepMeta")
+        if keep_meta is not None and not isinstance(keep_meta, bool):
+            return self.send_error_json(400, "keepMeta must be a boolean")
+        age_bands_days = request.get("ageBandsDays")
+        if age_bands_days is not None and not (
+                isinstance(age_bands_days, list)
+                and 0 < len(age_bands_days) <= MAX_AGE_BANDS
+                and all(isinstance(days, int) and not isinstance(days, bool)
+                        and 0 < days <= 36500 for days in age_bands_days)
+                and all(a < b for a, b in
+                        zip(age_bands_days, age_bands_days[1:]))):
+            return self.send_error_json(
+                400, "ageBandsDays must be an ascending list of up to %d "
+                "day cutoffs" % MAX_AGE_BANDS)
 
         with CREATE_LOCK:
             existing = read_job(job_id)
@@ -110,6 +124,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             os.makedirs(job_directory(job_id), exist_ok=True)
             write_job({"id": job_id, "query": query, "maxsize": maxsize,
                        "timeout": timeout, "filterableTags": filterable_tags,
+                       "keepMeta": bool(keep_meta),
+                       "ageBandsDays": age_bands_days,
                        "state": "queued",
                        "startedAt": now_iso(), "error": None, "stats": None})
             Q.put(job_id)

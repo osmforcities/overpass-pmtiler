@@ -44,7 +44,9 @@ def run_job(job_id: str) -> None:
         set_state(job, "converting")
         stats = convert(raw_path, os.path.join(job_dir, "data.ndjson"),
                         progress_writer(job, "converting"),
-                        filter_keys=job.get("filterableTags") or [])
+                        filter_keys=job.get("filterableTags") or [],
+                        keep_meta=bool(job.get("keepMeta")),
+                        age_bands_days=job.get("ageBandsDays") or [])
         with open(os.path.join(job_dir, "stats.json"), "w",
                   encoding="utf-8") as f:
             json.dump(stats, f)
