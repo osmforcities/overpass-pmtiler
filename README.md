@@ -136,7 +136,12 @@ of views or has to serve its assets locally.
 `check.py` runs a real Delft `building=*` job (rel 324269, ~39.5k features)
 against a live Overpass and asserts the whole contract. It defaults to the
 osmforcities dev tunnel (`https://localhost:8080/api/interpreter`); override
-with `PMTILER_OVERPASS`.
+with `PMTILER_OVERPASS`. `python3 check.py --offline` runs the same contract
+against an in-process stub Overpass seeded from the selftest fixture — no
+network, no Overpass, tippecanoe still required; only the live-data
+assertions are replaced with fixture literals. CI (`.github/workflows/check.yml`)
+runs the selftest and the offline check on every push and PR; the live mode
+stays a manual pre-deploy check.
 
 Current state (v0.1, #2/#3/#4/#5/#6/#7/#12): a closed way becomes a Polygon
 only if its tags say so, via the vendored osm-polygon-features ruleset (#12)

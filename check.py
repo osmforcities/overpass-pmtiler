@@ -8,7 +8,13 @@ the first failed assertion.
     PMTILER_OVERPASS=https://localhost:8080/api/interpreter PMTILER_INSECURE=1 \
         python3 check.py
 
+    python3 check.py --offline
+
 Defaults to the osmforcities dev tunnel (infra/ansible/scripts/overpass-tunnel.sh).
+--offline replaces the tunnel with an in-process stub Overpass serving the
+selftest fixture, so the whole HTTP contract runs without network or an
+Overpass (tippecanoe still required); only the live-data assertions are
+dropped, replaced with fixture literals.
 """
 import json
 import os
@@ -20,11 +26,78 @@ import time
 import urllib.error
 import urllib.request
 
+LIVE = "--offline" not in sys.argv
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPOOL = os.path.join(HERE, ".check-spool")
 OVERPASS = os.environ.get("PMTILER_OVERPASS", "https://localhost:8080/api/interpreter")
 INSECURE = os.environ.get("PMTILER_INSECURE", "1")
 DEADLINE = float(os.environ.get("CHECK_TIMEOUT", "900"))
+POLL = 2.0 if LIVE else 0.25
+
+if not LIVE:
+    import http.server
+    import threading
+    import urllib.parse
+
+    import pmtiler
+
+    # Offline expectations are literals pinned to pmtiler.FIXTURE (7 features).
+    # Never derive them from convert() -- that would make the check tautological.
+    OFFLINE_FEATURES = 7
+    OFFLINE_BBOX = [-1.0, -1.0, 24.5, 14.5]
+    OFFLINE_RELATIONS = (3, 3)      # (relations, relationsSkipped)
+    OFFLINE_UNDATED = 3             # two timestamp-less relations + member node
+
+    class StubOverpass(http.server.BaseHTTPRequestHandler):
+        """Answers like Overpass: the fixture for any query with an out clause,
+        an Overpass-shaped HTML error page for anything the service rejects."""
+
+        protocol_version = "HTTP/1.0"  # Content-Length framing, no keep-alive
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
+            query = form.get("data", [""])[0]
+            # Drop the leading [out:json][...]; settings statement the service
+            # prepends (apply_settings) before looking for an out clause --
+            # otherwise "out:json" satisfies any query.
+            end = query.find(";")
+            if query.startswith("[") and end != -1:
+                query = query[end + 1:]
+            if "out" in query:
+                # Pad past 1 MB: the service reads in 1 MiB chunks and a
+                # buffered read blocks until the chunk is full, so the first
+                # write below must satisfy a whole read() for a progress tick
+                # to land mid-fetch where a poll can sample it. Trailing
+                # newlines are inert to the converter (it stops at the
+                # elements array's closing bracket).
+                body = pmtiler.FIXTURE.encode() + b"\n" * (2 * 1024 * 1024)
+                split = 1024 * 1024 + 512
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body[:split])
+                self.wfile.flush()
+                time.sleep(0.5)  # hold fetching open for the polls
+                self.wfile.write(body[split:])
+            else:
+                body = ('<html><p>copyright boilerplate</p>'
+                        '<p><b>Error</b>: line 1: parse error - Unknown type '
+                        '&quot;this&quot;</p></html>').encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    def start_stub():
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StubOverpass)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        return "http://127.0.0.1:%d/api/interpreter" % httpd.server_address[1], httpd
 
 # Delft, rel 324269 -- ~39.5k buildings: small enough for a ~1 min run, big
 # enough to exercise the real area-query path. nwr matches the app's query
@@ -78,11 +151,15 @@ def poll(base, jid):
         if job["state"] in ("done", "failed"):
             job["_progress"] = progress
             return job, seen
-        time.sleep(2)
+        time.sleep(POLL)
     raise AssertionError("job %s stuck in %s after %ss" % (jid, seen[-1], DEADLINE))
 
 
 def main():
+    stub = None
+    overpass = OVERPASS
+    if not LIVE:
+        overpass, stub = start_stub()
     shutil.rmtree(SPOOL, ignore_errors=True)
     os.makedirs(SPOOL)
     port = free_port()
@@ -90,7 +167,7 @@ def main():
     proc = subprocess.Popen(
         [sys.executable, os.path.join(HERE, "pmtiler.py")],
         env=dict(os.environ, PMTILER_SPOOL=SPOOL, PMTILER_PORT=str(port),
-                 PMTILER_OVERPASS=OVERPASS, PMTILER_INSECURE=INSECURE))
+                 PMTILER_OVERPASS=overpass, PMTILER_INSECURE=INSECURE))
     try:
         for _ in range(50):
             try:
@@ -100,7 +177,7 @@ def main():
                 time.sleep(0.2)
         else:
             raise AssertionError("service did not come up on %s" % base)
-        print("pmtiler up on", base, "overpass:", OVERPASS)
+        print("pmtiler up on", base, "overpass:", overpass)
 
         # --- happy path
         status = call(base, "POST", "/jobs", JOB)[0]
@@ -123,18 +200,32 @@ def main():
               "stages:", sorted({p["stage"] for p in job["_progress"]}))
 
         stats = job["stats"]
-        assert abs(stats["features"] - EXPECTED_FEATURES) < EXPECTED_FEATURES * 0.2, \
-            "unexpected feature count %s" % stats["features"]
+        if LIVE:
+            assert abs(stats["features"] - EXPECTED_FEATURES) < EXPECTED_FEATURES * 0.2, \
+                "unexpected feature count %s" % stats["features"]
+        else:
+            assert stats["features"] == OFFLINE_FEATURES, stats["features"]
         assert stats["nodes"] + stats["ways"] + stats["relations"] \
             == stats["features"], stats
         assert stats["relations"] > 0, "nwr query must assemble relations"
-        assert stats["relationsSkipped"] < stats["relations"], stats
+        if LIVE:
+            assert stats["relationsSkipped"] < stats["relations"], stats
+        else:
+            assert (stats["relations"], stats["relationsSkipped"]) \
+                == OFFLINE_RELATIONS, stats
         assert stats["editorsCount"] > 0 and stats["changesetsCount"] > 0, stats
         w, s, e, n = stats["bbox"]
-        assert 4.2 < w < e < 4.5 and 51.9 < s < n < 52.1, stats["bbox"]
-        # only emitted member nodes (no meta) may be undated
+        if LIVE:
+            assert 4.2 < w < e < 4.5 and 51.9 < s < n < 52.1, stats["bbox"]
+        else:
+            assert [w, s, e, n] == OFFLINE_BBOX, stats["bbox"]
+        # only emitted member nodes (no meta) may be undated; the fixture also
+        # carries two timestamp-less relations, hence the literal offline
         undated = stats["features"] - sum(stats["editRecencyBands"])
-        assert 0 <= undated <= stats["nodes"], stats
+        if LIVE:
+            assert 0 <= undated <= stats["nodes"], stats
+        else:
+            assert undated == OFFLINE_UNDATED, stats
         print("stats: %d features, %d editors, %d changesets" % (
             stats["features"], stats["editorsCount"], stats["changesetsCount"]))
 
@@ -149,7 +240,8 @@ def main():
         assert sum(v["count"] for v in building["values"]) \
             >= stats["features"] - building["missing"], building["values"][:3]
         # every feature matched building=* except emitted member nodes
-        assert building["missing"] <= stats["nodes"], building["missing"]
+        if LIVE:  # the fixture's corpus is not building=*
+            assert building["missing"] <= stats["nodes"], building["missing"]
         assert dims[1]["missing"] > 0, dims[1]  # amenity: sparse, entry kept
         mix = stats["geometryMix"]
         assert mix["points"] + mix["lines"] + mix["areas"] == stats["features"], mix
@@ -216,6 +308,9 @@ def main():
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+        if stub:
+            stub.shutdown()
+            stub.server_close()
         shutil.rmtree(SPOOL, ignore_errors=True)
 
 
