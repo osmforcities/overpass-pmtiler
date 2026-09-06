@@ -168,7 +168,10 @@ async function show() {
     await new Promise(r => setTimeout(r, 2000));
   }
   if (job.state === "failed") {
-    hud.innerHTML = `${BACK}<b>${jobId} failed</b><br>` + job.error;
+    // error text as a text node, never HTML: a tippecanoe error tail can
+    // quote OSM tag values, which anyone can author
+    hud.innerHTML = `${BACK}<b>${jobId} failed</b><br>`;
+    hud.appendChild(document.createTextNode(job.error));
     return;
   }
   const s = job.stats;
@@ -225,7 +228,9 @@ async function show() {
   });
   window.map = map;
   map.on("error", (ev) => {
-    hud.innerHTML += "<br><b>map error:</b> " + (ev.error && ev.error.message);
+    hud.insertAdjacentHTML("beforeend", "<br><b>map error:</b> ");
+    hud.appendChild(  // message as text, may echo response bytes
+      document.createTextNode(String(ev.error && ev.error.message)));
     console.error(ev.error);
   });
   map.once("idle", () => { window.__rendered = true; });
