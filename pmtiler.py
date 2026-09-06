@@ -623,6 +623,7 @@ def convert(inp, outp, tick=None, filter_keys=()):
         mapper_bands[sum((now - ts) > b for b in BANDS)] += 1
     pct = (lambda n: round(100.0 * n / features, 2)) if features else (lambda n: 0.0)
     return {
+        "schemaVersion": 1,  # cross-repo contract: bump on removals/meaning changes
         "features": features,
         **counts,
         "editorsCount": len(editors),
@@ -1132,6 +1133,7 @@ def selftest():
         assert len(feats[5]["geometry"]["coordinates"]) == 2  # two outers
         assert feats[6]["properties"]["@id"] == "relation/7"  # boundary type
 
+        assert s["schemaVersion"] == 1
         assert s["features"] == 7 and s["ways"] == 2 and s["nodes"] == 2
         assert s["relations"] == 3
         # skipped relations: no type tag (4), route (8), unclosed outer (9)

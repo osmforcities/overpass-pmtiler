@@ -46,6 +46,9 @@ DELETE /jobs/:id               (ack -> cleanup)
   `computeFilterDimensions(..., { keepEmpty: true })`. No `age` dimension
   is emitted: tiles carry raw `_ts`, and the stats' `editRecencyBands`
   cover age, so age bucketing stays a consumer concern.
+- `stats.json` leads with `schemaVersion` (int, currently `1`): additive
+  fields don't bump it, removals or meaning changes do. A consumer reads it
+  first and refuses what it doesn't understand.
 - `failed` carries the Overpass (or stage) error text through.
 - A periodic sweep removes jobs older than a configurable age regardless
   of ack.
