@@ -13,7 +13,8 @@ from config import RUNNING, log
 from convert import convert
 from errors import Aborted, StageError
 from overpass import stage_fetch
-from spool import jobdir, progress_writer, read_job, set_state, sweep
+from spool import (job_directory as jobdir, progress_writer, read_job,
+                   set_state, sweep)
 
 Q = queue.Queue()
 

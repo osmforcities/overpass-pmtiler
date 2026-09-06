@@ -13,7 +13,8 @@ from convert import brace_delta, convert, is_area
 from errors import Aborted, StageError
 from overpass import apply_settings, html_error, tail_remark
 from runner import Q, recover
-from spool import jobdir, progress_writer, read_job, sweep, write_job
+from spool import (job_directory as jobdir, progress_writer, read_job, sweep,
+                   write_job)
 from bake import validate_pmtiles
 
 

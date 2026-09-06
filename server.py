@@ -14,7 +14,7 @@ import config
 from config import (HERE, ID_RE, MAX_FILTER_KEYS, MAX_MAXSIZE, MAX_QUERY,
                     MAX_TIMEOUT, OUTPUTS, log, now_iso)
 from runner import Q, recover, worker
-from spool import jobdir, read_job, sweep, write_job
+from spool import job_directory as jobdir, read_job, sweep, write_job
 
 CREATE_LOCK = threading.Lock()
 
