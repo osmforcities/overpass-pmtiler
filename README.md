@@ -60,10 +60,12 @@ DELETE /jobs/:id               (ack -> cleanup)
 
 ### Interface invariants
 
-- The query must produce Overpass JSON with inline geometry: the service
-  prepends `[out:json]` when the query has no settings block, and always
-  injects its own `[maxsize:]`/`[timeout:]` (overriding any in the query);
-  the `out` statements must use `out geom`.
+- The query must produce Overpass JSON with inline geometry: `[out:json]`
+  settings and `out geom` statements. When the request supplies `maxsize`/
+  `timeout`, the service injects `[maxsize:]`/`[timeout:]` into the query's
+  settings block (overriding any already present) and prepends `[out:json]`
+  if the query has no settings block at all; if neither is supplied, the
+  query passes through unchanged.
 - Only `type=multipolygon`/`boundary` relations are assembled; other
   relation types are counted in `relationsSkipped`, never emitted.
 - The archive has a single tile layer named `features`.
