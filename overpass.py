@@ -17,10 +17,23 @@ from errors import StageError
 from spool import progress_writer
 
 SETTING_RE = re.compile(r"\[\s*(?:maxsize|timeout)\s*:\s*\d+\s*\]", re.I)
+# The ways Overpass says "this query is over the ceiling": the areas
+# dispatcher refusing to evaluate (total_available_space exhausted, surfacing
+# as a Dispatcher_Client protocol error) and the runtime exhausting its
+# [maxsize:] budget. Both are permanent for a given query -- callers should
+# not retry, unlike unclassified failures.
+TOO_LARGE_RE = re.compile(
+    r"out of memory|total_available_space|Dispatcher_Client", re.I)
 # anchored to the pretty-printer's top-level indent: an element's remark=* TAG
 # sits deeper and must not fail a successful fetch
 REMARK_RE = re.compile(r'^  "remark"\s*:\s*"((?:[^"\\]|\\.)*)"', re.M)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def classify_error(text: str) -> str | None:
+    """Machine-readable failure kind for the job record, or None when
+    unclassified (a caller may treat those as transient and retry)."""
+    return "too_large" if TOO_LARGE_RE.search(text) else None
 
 
 def apply_settings(query: str, maxsize: int | None, timeout: int | None) -> str:
