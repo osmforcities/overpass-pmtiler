@@ -105,7 +105,13 @@ class StageError(Exception):
 
 
 class Aborted(Exception):
-    """Job was deleted while running."""
+    """The abort seam, in one place. DELETE removes the job dir; the running
+    job notices on its next write_job (progress tick or state change), which
+    raises this and unwinds the stage -- run_job exits quietly. A re-POST of
+    a deleted id recreates the record with a fresh startedAt, so a stale
+    run's write_job aborts on the generation mismatch instead of writing
+    into the new job's directory. Stages abort only at write_job calls;
+    stage_bake additionally kills its tippecanoe subprocess on unwind."""
 
 
 def now_iso():
@@ -134,6 +140,9 @@ def write_job(job):
     jd = jobdir(job["id"])
     if not os.path.isdir(jd):
         raise Aborted(job["id"])
+    current = read_job(job["id"])  # startedAt is the run's generation
+    if current and current.get("startedAt") != job.get("startedAt"):
+        raise Aborted(job["id"])  # dir was deleted and recreated under us
     job["updatedAt"] = now_iso()
     path = os.path.join(jd, "job.json")
     tmp = path + ".tmp"
@@ -150,11 +159,8 @@ def set_state(job, state):
 
 
 def progress_writer(job, stage, interval=1.0):
-    """Throttled progress into job.json -- callers poll state, nothing is pushed.
-
-    Also the abort signal: write_job raises Aborted once the job dir is gone, so
-    a DELETE stops the running stage instead of waiting for the next boundary.
-    """
+    """Throttled progress into job.json -- callers poll state, nothing is
+    pushed. Each write is also an abort checkpoint (see Aborted)."""
     last = [0.0]
 
     def tick(**fields):
@@ -692,15 +698,21 @@ def stage_bake(job, jd):
                          text=True)
     tick = progress_writer(job, "baking")
     errors = []
-    for line in p.stderr:  # tippecanoe already throttles, so every line is used
-        m = PROGRESS_RE.match(line.strip())
-        if m:
-            tick(pct=float(m.group(1)))
-        elif line.strip():
-            errors.append(line.rstrip())
-            del errors[:-20]
-    if p.wait() != 0:
-        raise StageError("tippecanoe: " + ("\n".join(errors)[-2000:] or "failed"))
+    try:
+        for line in p.stderr:  # tippecanoe throttles, so every line is used
+            m = PROGRESS_RE.match(line.strip())
+            if m:
+                tick(pct=float(m.group(1)))
+            elif line.strip():
+                errors.append(line.rstrip())
+                del errors[:-20]
+        if p.wait() != 0:
+            raise StageError(
+                "tippecanoe: " + ("\n".join(errors)[-2000:] or "failed"))
+    finally:
+        if p.poll() is None:  # abort mid-bake: don't orphan the subprocess
+            p.kill()
+            p.wait()
     validate_pmtiles(out)
     log("baked", job["id"], os.path.getsize(out), "bytes")
 
@@ -732,21 +744,20 @@ def run_job(jid):
     except Aborted:
         log("job", jid, "aborted (deleted)")
     except StageError as e:
-        fail(jid, str(e))
+        fail(job, str(e))
     except Exception as e:
-        fail(jid, "%s: %s" % (type(e).__name__, e))
+        fail(job, "%s: %s" % (type(e).__name__, e))
 
 
-def fail(jid, error):
-    job = read_job(jid)
-    if not job:
-        return
+def fail(job, error):
+    # keep the run's own dict: a re-read would adopt the on-disk record's
+    # generation and stomp a re-POSTed job (write_job couldn't tell them apart)
     job["error"] = error
     try:
         set_state(job, "failed")
     except Aborted:
         pass
-    log("job", jid, "failed:", error[:200])
+    log("job", job["id"], "failed:", error[:200])
 
 
 def worker():
@@ -1223,6 +1234,30 @@ def selftest():
             "<html><p>copyright boilerplate</p>"
             "<p><b>Error</b>: line 1: Unknown type &quot;this&quot;</p></html>"
         ) == 'Error : line 1: Unknown type "this"'
+
+        # abort seam: a stale run must strand on its next write, both when the
+        # dir is gone and when a re-POST recreated it (generation mismatch)
+        global SPOOL
+        old_spool, SPOOL = SPOOL, os.path.join(d, "spool")
+        try:
+            job = {"id": "j1", "state": "queued", "startedAt": now_iso()}
+            os.makedirs(jobdir("j1"))
+            write_job(job)
+            shutil.rmtree(jobdir("j1"))
+            try:
+                write_job(job)
+                raise AssertionError("deleted dir must abort")
+            except Aborted:
+                pass
+            os.makedirs(jobdir("j1"))
+            write_job({"id": "j1", "state": "queued", "startedAt": now_iso()})
+            try:
+                write_job(job)
+                raise AssertionError("recreated id must abort the stale run")
+            except Aborted:
+                pass
+        finally:
+            SPOOL = old_spool
     finally:
         shutil.rmtree(d, ignore_errors=True)
     print("selftest ok")
