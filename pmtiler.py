@@ -205,7 +205,9 @@ def recover():
 # --- fetch -----------------------------------------------------------------
 
 SETTING_RE = re.compile(r"\[\s*(?:maxsize|timeout)\s*:\s*\d+\s*\]", re.I)
-REMARK_RE = re.compile(r'"remark"\s*:\s*"((?:[^"\\]|\\.)*)"')
+# anchored to the pretty-printer's top-level indent: an element's remark=* TAG
+# sits deeper and must not fail a successful fetch
+REMARK_RE = re.compile(r'^  "remark"\s*:\s*"((?:[^"\\]|\\.)*)"', re.M)
 TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -269,6 +271,9 @@ def stage_fetch(job, path):
         raise StageError(html_error(e.read().decode("utf-8", "replace")))
     except urllib.error.URLError as e:
         raise StageError("overpass unreachable: %s" % (e.reason,))
+    except TimeoutError:
+        raise StageError("overpass read timed out after %ds"
+                         % ((job.get("timeout") or 180) + 60))
     remark = tail_remark(path)
     if remark:
         raise StageError(remark)
@@ -737,6 +742,10 @@ def run_job(jid):
             json.dump(stats, f)
         job["stats"] = stats
         os.remove(raw)  # ~2 GB at metro scale; the nd-geojson supersedes it
+        if not stats["features"]:
+            # fail here with the real cause; tippecanoe would exit nonzero
+            # with "Did not read any valid geometries" two stages later
+            raise StageError("query matched no elements")
 
         set_state(job, "baking")
         stage_bake(job, jd)
@@ -766,6 +775,10 @@ def worker():
         try:
             run_job(jid)
             sweep()
+        except Exception as e:
+            # a sweep()/fail() error must not kill the only worker thread --
+            # the HTTP surface would keep queueing jobs nobody runs
+            log("worker error on", jid, "-", "%s: %s" % (type(e).__name__, e))
         finally:
             Q.task_done()
 
@@ -1256,8 +1269,58 @@ def selftest():
                 raise AssertionError("recreated id must abort the stale run")
             except Aborted:
                 pass
+
+            # progress_writer: first tick always writes, the throttle
+            # suppresses, and a tick on a deleted job is an abort checkpoint
+            job2 = {"id": "j2", "state": "fetching", "startedAt": now_iso()}
+            os.makedirs(jobdir("j2"))
+            write_job(job2)
+            tick = progress_writer(job2, "fetching", interval=3600)
+            tick(bytes=1)
+            assert read_job("j2")["progress"] == {"stage": "fetching",
+                                                  "bytes": 1}
+            tick(bytes=2)  # throttled: on-disk progress unchanged
+            assert read_job("j2")["progress"]["bytes"] == 1
+            shutil.rmtree(jobdir("j2"))
+            try:
+                progress_writer(job2, "fetching", interval=0)(bytes=3)
+                raise AssertionError("tick on a deleted job must abort")
+            except Aborted:
+                pass
+
+            # sweep: age is last-write mtime; stale dirs go, fresh ones stay
+            os.makedirs(jobdir("stale"))
+            os.makedirs(jobdir("fresh"))
+            old_t = time.time() - (MAX_AGE_DAYS + 1) * DAY
+            os.utime(jobdir("stale"), (old_t, old_t))
+            sweep()
+            assert not os.path.isdir(jobdir("stale"))
+            assert os.path.isdir(jobdir("fresh"))
         finally:
             SPOOL = old_spool
+
+        # validate_pmtiles: garbage must not pass as an archive
+        bad = os.path.join(d, "bad.pmtiles")
+        with open(bad, "wb") as f:
+            f.write(b"nope")
+        try:
+            validate_pmtiles(bad)
+            raise AssertionError("garbage archive must fail validation")
+        except StageError:
+            pass
+
+        # tail_remark: a top-level remark (2-space indent) is a runtime
+        # error; the OSM tag remark=* on an element is data, not an error
+        rp = os.path.join(d, "tail.json")
+        with open(rp, "w", encoding="utf-8") as f:
+            f.write('{\n  "elements": [\n{\n  "type": "node",\n'
+                    '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ],\n'
+                    '  "remark": "runtime error: Query timed out"\n}\n')
+        assert tail_remark(rp) == "runtime error: Query timed out"
+        with open(rp, "w", encoding="utf-8") as f:
+            f.write('{\n  "elements": [\n{\n  "type": "node",\n'
+                    '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ]\n}\n')
+        assert tail_remark(rp) is None
     finally:
         shutil.rmtree(d, ignore_errors=True)
     print("selftest ok")
