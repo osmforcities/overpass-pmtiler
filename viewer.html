@@ -146,14 +146,16 @@ const CITIES = [
    rel: 271110, maxsize: 805306368, timeout: 300},
   {id: "sp-buildings", label: "Sao Paulo city (2.14M) ~10min",
    rel: 298285, maxsize: 805306368, timeout: 900},
+  {id: "sp-streets", label: "Sao Paulo streets (174k ways, 23,036 km) ~90s",
+   rel: 298285, key: "highway", maxsize: 805306368, timeout: 900},
   {id: "sp-state-buildings", label: "Sao Paulo state (2.71M)",
    rel: 298204, maxsize: 1073741824, timeout: 1800},
   {id: "tokyo-buildings", label: "Tokyo Metropolis (>3GiB, expected to fail)",
    rel: 1543125, maxsize: 1073741824, timeout: 1800},
 ];
 
-const query = (rel) =>
-  `[out:json];area(${3600000000 + rel})->.a;way["building"](area.a);out geom meta;`;
+const query = (rel, key = "building") =>
+  `[out:json];area(${3600000000 + rel})->.a;way["${key}"](area.a);out geom meta;`;
 
 const EXAMPLE = query(CITIES[0].rel);
 
@@ -206,7 +208,8 @@ async function index() {
     if (!b) return;
     const c = CITIES[b.dataset.i];
     // POST is idempotent, so clicking one that already ran just opens it
-    submit({id: c.id, query: query(c.rel), timeout: c.timeout, maxsize: c.maxsize});
+    submit({id: c.id, query: query(c.rel, c.key),
+            timeout: c.timeout, maxsize: c.maxsize});
   };
 
   document.getElementById("new").onsubmit = (ev) => {

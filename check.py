@@ -25,11 +25,15 @@ one-click buttons in viewer.html):
     small           Delft                   324269    39.6k buildings 25s, 3.8 MB
     mid             Amsterdam               271110    197k buildings  ~1 min
     standard metro  Sao Paulo (municipality) 298285   2.14M buildings 9m30s, 53 MB
+    street grid     Sao Paulo highway=*     298285    174k ways       ~90s, 10.6 MB
     large state     Sao Paulo (state)       298204    2.71M buildings not yet run
     ceiling         Tokyo Metropolis        1543125   >3 GiB to count fails: too_large
 
 Tokyo stays on purpose: refusing it gracefully is a requirement, so the
-ceiling case must be as easy to run as the happy ones.
+ceiling case must be as easy to run as the happy ones. The street grid is
+the line-geometry counterpart to the building runs (2026-09 measurement:
+173,470 LineStrings + 712 areas, 23,036 lineKm, convert 6.9s at 46 MB
+RSS) -- a metro's streets are ~20x cheaper than its buildings.
 
 Reference measurements (12 vCPU / 64 GB host, 2026-09), Sao Paulo
 building=* end to end ~10 min: fetch 2.23 GB in 312s at 768 MiB maxsize
