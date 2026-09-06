@@ -18,7 +18,10 @@ INSECURE = os.environ.get("PMTILER_INSECURE") == "1"
 NICE = os.environ.get("PMTILER_NICE", "10")
 MAX_AGE_DAYS = float(os.environ.get("PMTILER_MAX_AGE_DAYS", "7"))
 
-ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+# (?!\.\.?$): "." and ".." would otherwise pass, and job_directory() joins
+# the id onto the spool path -- DELETE /jobs/.. would rmtree the spool's
+# parent and POST id ".." would write records there
+ID_RE = re.compile(r"^(?!\.\.?$)[A-Za-z0-9._-]{1,128}$")
 MAX_QUERY = 64 * 1024
 MAX_MAXSIZE = 4 * 1024 ** 3
 MAX_TIMEOUT = 3600

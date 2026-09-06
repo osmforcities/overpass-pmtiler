@@ -313,6 +313,12 @@ def main():
 
         # --- validation at the trust boundary
         assert call(base, "POST", "/jobs", {"id": "../escape", "query": "x"})[0] == 400
+        # "." and ".." match the id charset but resolve outside the spool:
+        # DELETE /jobs/.. would rmtree the spool's PARENT if these passed
+        assert call(base, "POST", "/jobs", {"id": "..", "query": "x"})[0] == 400
+        assert call(base, "POST", "/jobs", {"id": ".", "query": "x"})[0] == 400
+        assert call(base, "DELETE", "/jobs/..")[0] == 404
+        assert os.path.isdir(SPOOL), "spool parent must survive DELETE /jobs/.."
         assert call(base, "POST", "/jobs", {"id": "ok", "query": ""})[0] == 400
         assert call(base, "POST", "/jobs",
                     {"id": "ok", "query": "x", "timeout": 99999})[0] == 400
