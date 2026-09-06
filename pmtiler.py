@@ -744,21 +744,20 @@ def run_job(jid):
     except Aborted:
         log("job", jid, "aborted (deleted)")
     except StageError as e:
-        fail(jid, str(e))
+        fail(job, str(e))
     except Exception as e:
-        fail(jid, "%s: %s" % (type(e).__name__, e))
+        fail(job, "%s: %s" % (type(e).__name__, e))
 
 
-def fail(jid, error):
-    job = read_job(jid)
-    if not job:
-        return
+def fail(job, error):
+    # keep the run's own dict: a re-read would adopt the on-disk record's
+    # generation and stomp a re-POSTed job (write_job couldn't tell them apart)
     job["error"] = error
     try:
         set_state(job, "failed")
     except Aborted:
         pass
-    log("job", jid, "failed:", error[:200])
+    log("job", job["id"], "failed:", error[:200])
 
 
 def worker():
