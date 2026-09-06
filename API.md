@@ -11,7 +11,10 @@ POST   /jobs      { id, query, maxsize?, timeout?, filterableTags? }
                   -> 200 { id, state }        idempotent resubmit of a known id
                   -> 400 / 413                validation failures
 
-GET    /jobs      -> [ { id, state, startedAt, progress? } ]   newest first
+GET    /status    -> { version, uptimeSeconds, queueDepth, jobStates,
+                       spoolBytes, diskFreeBytes }
+GET    /jobs      -> [ { id, state, startedAt, progress?, errorKind? } ]
+                                                               newest first
 GET    /jobs/:id  -> { id, state, startedAt,
                        progress?, error?, errorKind?, stats? }
 GET    /jobs/:id/output.pmtiles     the archive (Range supported)
@@ -22,6 +25,11 @@ DELETE /jobs/:id  -> 200            ack: outputs are deleted; aborts if running
 
 No auth: bind to localhost and front with a reverse proxy restricted to
 trusted clients (see `examples/nginx-pmtiler.conf`).
+
+`GET /status` is the ops snapshot the dashboard polls (and a monitoring
+probe can too): `jobStates` counts jobs per state, `queueDepth` is jobs
+waiting for the serial worker, `spoolBytes` is the spool's current size on
+disk, `diskFreeBytes` the free space beside it.
 
 ## Request fields
 

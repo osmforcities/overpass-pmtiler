@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import threading
+import time
 
 import config
 from config import (HERE, ID_RE, MAX_FILTER_KEYS, MAX_MAXSIZE, MAX_QUERY,
@@ -17,8 +18,20 @@ from runner import Q, recover, worker
 from spool import job_directory, read_job, sweep, write_job
 
 CREATE_LOCK = threading.Lock()
+STARTED_AT = time.time()
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+def spool_bytes() -> int:
+    total = 0
+    for root, _, files in os.walk(config.SPOOL):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -108,12 +121,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path in ("/", "/viewer.html"):  # visual inspection, same-origin
             return self.send_file(os.path.join(HERE, "viewer.html"),
                                   "text/html")
+        if path == "/status":
+            states = {}
+            for job in filter(None, map(read_job, os.listdir(config.SPOOL))):
+                state = job.get("state") or "unknown"
+                states[state] = states.get(state, 0) + 1
+            disk = shutil.disk_usage(config.SPOOL)
+            return self.send_json(200, {
+                "version": self.server_version,
+                "uptimeSeconds": int(time.time() - STARTED_AT),
+                "queueDepth": Q.qsize(),
+                "jobStates": states,
+                "spoolBytes": spool_bytes(),
+                "diskFreeBytes": disk.free,
+            })
         if path == "/jobs":
             # .get() throughout: one malformed job.json must not 500 the list
             return self.send_json(200, sorted(
                 ({"id": job.get("id"), "state": job.get("state"),
                   "startedAt": job.get("startedAt"),
-                  "progress": job.get("progress")}
+                  "progress": job.get("progress"),
+                  "errorKind": job.get("errorKind")}
                  for job in filter(None, map(read_job,
                                              os.listdir(config.SPOOL)))),
                 key=lambda job: job["startedAt"] or "", reverse=True))

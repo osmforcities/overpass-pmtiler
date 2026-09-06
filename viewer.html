@@ -2,29 +2,76 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>pmtiler viewer</title>
+<title>pmtiler</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
 <style>
+  /* Design Atlas palette subset (osmforcities app tokens) + Geist */
+  :root {
+    --olive-500:#57814c; --olive-700:#293f25;
+    --green-100:#e5f6ed; --green-600:#056c37;
+    --blue-100:#e2eafd; --blue-500:#0b4ad8; --blue-600:#06256d;
+    --gray-100:#f0f2fa; --gray-200:#d6dcf1; --gray-500:#5872c7;
+    --gray-700:#243045;
+    --yellow-100:#fdf3d2; --yellow-700:#745b08;
+    --orange-100:#fff5ea; --orange-600:#e47a00; --orange-700:#8f4d00;
+    --sans:"Geist",system-ui,sans-serif;
+    --mono:"Geist Mono",ui-monospace,monospace;
+  }
   html, body, #map { margin:0; height:100%; }
-  #hud { position:fixed; top:8px; left:8px; z-index:10; background:#fff;
-         font:12px/1.5 monospace; padding:8px 10px; border:1px solid #ccc;
-         max-width:32em; max-height:90vh; overflow:auto; }
-  #hud a { display:block; color:#06c; }
+  body { background:var(--gray-100); }
+  #hud { position:fixed; top:12px; left:12px; z-index:10; background:#fff;
+         font:13px/1.55 var(--sans); color:var(--gray-700);
+         padding:14px 16px; border:1px solid var(--gray-200);
+         border-radius:10px; box-shadow:0 2px 10px rgba(36,48,69,.08);
+         max-width:34em; max-height:92vh; overflow:auto; }
+  #hud a { display:block; color:var(--blue-500); text-decoration:none; }
+  #hud a:hover { text-decoration:underline; }
   #hud a.back { margin-bottom:.5em; }
-  #hud b { display:block; margin:.6em 0 .3em; }
+  #hud b { display:block; margin:.9em 0 .35em; font-weight:600;
+           font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+           color:var(--gray-500); }
   #hud input, #hud textarea, #hud button { font:inherit; width:100%;
-    box-sizing:border-box; margin-bottom:.3em; }
+    box-sizing:border-box; margin-bottom:.35em; border:1px solid var(--gray-200);
+    border-radius:6px; padding:.35em .5em; background:#fff; }
+  #hud textarea, #hud input#jid { font-family:var(--mono); font-size:12px; }
+  #hud button { background:var(--olive-500); color:#fff; border:none;
+    font-weight:500; cursor:pointer; }
+  #hud button:hover { background:var(--olive-700); }
+  #hud button.city { text-align:left; background:#fff; color:var(--gray-700);
+    border:1px solid var(--gray-200); font-weight:400; }
+  #hud button.city:hover { border-color:var(--blue-500); color:var(--blue-500); }
   #hud label { display:flex; gap:.4em; align-items:center; }
-  #formerr { color:#c00; }
-  .stage { color:#999; }
-  .stage.on { color:#000; font-weight:bold; }
-  .stage.done { color:#555; }
+  #formerr { color:var(--orange-700); }
+  #status { display:flex; flex-wrap:wrap; gap:.35em; margin-bottom:.2em;
+    font-family:var(--mono); font-size:11px; }
+  .chip { border:1px solid var(--gray-200); border-radius:999px;
+    padding:.1em .6em; background:var(--gray-100); white-space:nowrap; }
+  .badge { display:inline-block; border-radius:999px; padding:0 .55em;
+    font:500 11px/1.6 var(--mono); vertical-align:.05em; }
+  .badge.done { background:var(--green-100); color:var(--green-600); }
+  .badge.failed { background:var(--orange-100); color:var(--orange-600); }
+  .badge.queued { background:var(--gray-100); color:var(--gray-500); }
+  .badge.fetching, .badge.converting, .badge.baking {
+    background:var(--blue-100); color:var(--blue-600); }
+  .badge.kind { background:var(--yellow-100); color:var(--yellow-700); }
+  a.job { display:flex; gap:.5em; align-items:baseline; padding:.15em 0;
+    color:inherit; }
+  a.job .jobid { font-family:var(--mono); font-size:12px;
+    color:var(--blue-500); }
+  a.job .meta { color:var(--gray-500); font-size:11px;
+    font-family:var(--mono); }
+  .stage { color:var(--gray-500); }
+  .stage.on { color:var(--gray-700); font-weight:600; }
+  .stage.done { color:var(--gray-500); }
   .stage.done progress { opacity:.45; }
-  .stage progress { display:block; width:100%; height:.6em; margin:.2em 0 .4em; }
-  button.city { text-align:left; }
-  .band { display:inline-block; width:1.2em; height:.8em; margin-right:.3em; }
+  .stage progress { display:block; width:100%; height:.6em; margin:.2em 0 .4em;
+    accent-color:var(--olive-500); }
+  .band { display:inline-block; width:1.2em; height:.8em; margin-right:.3em;
+    border-radius:2px; }
 </style>
 </head>
 <body>
@@ -61,10 +108,20 @@ function progressText(p) {
   return "";
 }
 
+// job records come from disk; escape anything rendered from them
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => "&#" + c.charCodeAt(0) + ";");
+
+const GB = 1 << 30;
+const human = (n) => n >= GB ? (n / GB).toFixed(1) + " GB"
+                             : (n / 1048576).toFixed(0) + " MB";
+
 // Skeleton is rendered once so the form keeps focus and typed text while the
 // job list refreshes underneath it.
 const INDEX_HTML = `
-  <b>pmtiler jobs</b>
+  <b>pmtiler</b>
+  <div id="status">loading…</div>
+  <b>jobs</b>
   <div id="list">loading…</div>
   <b>canonical cities</b>
   <div id="cities"></div>
@@ -89,14 +146,16 @@ const CITIES = [
    rel: 271110, maxsize: 805306368, timeout: 300},
   {id: "sp-buildings", label: "Sao Paulo city (2.14M) ~10min",
    rel: 298285, maxsize: 805306368, timeout: 900},
+  {id: "sp-streets", label: "Sao Paulo streets (174k ways, 23,036 km) ~90s",
+   rel: 298285, key: "highway", maxsize: 805306368, timeout: 900},
   {id: "sp-state-buildings", label: "Sao Paulo state (2.71M)",
    rel: 298204, maxsize: 1073741824, timeout: 1800},
   {id: "tokyo-buildings", label: "Tokyo Metropolis (>3GiB, expected to fail)",
    rel: 1543125, maxsize: 1073741824, timeout: 1800},
 ];
 
-const query = (rel) =>
-  `[out:json];area(${3600000000 + rel})->.a;way["building"](area.a);out geom meta;`;
+const query = (rel, key = "building") =>
+  `[out:json];area(${3600000000 + rel})->.a;way["${key}"](area.a);out geom meta;`;
 
 const EXAMPLE = query(CITIES[0].rel);
 
@@ -114,10 +173,27 @@ async function refreshList() {
   const jobs = await (await fetch("/jobs")).json();
   document.getElementById("list").innerHTML = jobs.length
     ? jobs.map(j =>
-        `<a href="?job=${encodeURIComponent(j.id)}">${j.id} — ${j.state}` +
-        `${progressText(j.progress)}</a>`).join("")
+        `<a class="job" href="?job=${encodeURIComponent(j.id)}">` +
+        `<span class="badge ${esc(j.state)}">${esc(j.state)}</span>` +
+        `<span class="jobid">${esc(j.id)}</span>` +
+        `<span class="meta">${esc(progressText(j.progress))}</span>` +
+        (j.errorKind === "too_large"
+          ? '<span class="badge kind">too large</span>' : "") +
+        `</a>`).join("")
     : "<i>none yet</i>";
   setTimeout(refreshList, 2000);
+}
+
+async function refreshStatus() {
+  const s = await (await fetch("/status")).json();
+  const chips = Object.entries(s.jobStates)
+    .map(([state, n]) => `<span class="chip">${n} ${esc(state)}</span>`);
+  if (s.queueDepth) chips.unshift(`<span class="chip">queue ${s.queueDepth}</span>`);
+  chips.push(`<span class="chip">spool ${human(s.spoolBytes)}</span>`,
+             `<span class="chip">disk free ${human(s.diskFreeBytes)}</span>`,
+             `<span class="chip">up ${(s.uptimeSeconds / 3600).toFixed(1)}h</span>`);
+  document.getElementById("status").innerHTML = chips.join("");
+  setTimeout(refreshStatus, 5000);
 }
 
 async function index() {
@@ -132,7 +208,8 @@ async function index() {
     if (!b) return;
     const c = CITIES[b.dataset.i];
     // POST is idempotent, so clicking one that already ran just opens it
-    submit({id: c.id, query: query(c.rel), timeout: c.timeout, maxsize: c.maxsize});
+    submit({id: c.id, query: query(c.rel, c.key),
+            timeout: c.timeout, maxsize: c.maxsize});
   };
 
   document.getElementById("new").onsubmit = (ev) => {
@@ -145,6 +222,7 @@ async function index() {
     });
   };
   refreshList();
+  refreshStatus();
 }
 
 async function show() {
