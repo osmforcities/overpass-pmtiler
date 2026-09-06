@@ -13,8 +13,8 @@ from convert import brace_delta, convert, is_area
 from errors import Aborted, StageError
 from overpass import apply_settings, classify_error, html_error, tail_remark
 from runner import Q, recover
-from spool import (job_directory, progress_writer, read_job, sweep,
-                   write_job)
+from spool import (job_directory, list_jobs, progress_writer, read_job,
+                   sweep, write_job)
 
 
 FIXTURE = '''{
@@ -414,6 +414,11 @@ def selftest():
             assert Q.empty()
             r1 = read_job("r1")
             assert r1["state"] == "queued" and "progress" not in r1, r1
+
+            # list_jobs: readable records only -- the corrupt "bad" and the
+            # record-less "fresh" dir are skipped
+            ids = sorted(job["id"] for job in list_jobs())
+            assert ids == ["j1", "r1", "r2"], ids
         finally:
             config.SPOOL = old_spool
 

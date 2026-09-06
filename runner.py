@@ -7,13 +7,13 @@ import json
 import os
 import queue
 
-import config
 from bake import stage_bake
 from config import RUNNING, log
 from convert import convert
 from errors import Aborted, StageError
 from overpass import classify_error, stage_fetch
-from spool import (job_directory, progress_writer, read_job, set_state, sweep)
+from spool import (job_directory, list_jobs, progress_writer, read_job,
+                   set_state, sweep)
 
 Q = queue.Queue()
 
@@ -21,13 +21,10 @@ Q = queue.Queue()
 def recover() -> None:
     """Crash recovery: running states go back to queued, then re-enqueue FIFO."""
     pending = []
-    for name in os.listdir(config.SPOOL):
-        job = read_job(name)
-        if not job:
-            continue
+    for job in list_jobs():
         if job.get("state") in RUNNING:
             set_state(job, "queued")  # via set_state so stale progress clears
-            log("recovered", name)
+            log("recovered", job["id"])
         if job.get("state") == "queued":
             pending.append(job)
     for job in sorted(pending, key=lambda j: j.get("startedAt") or ""):

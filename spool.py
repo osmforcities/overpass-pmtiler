@@ -8,7 +8,7 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import config
 from config import DAY, log, now_iso
@@ -32,6 +32,12 @@ def read_job(job_id: str) -> dict | None:
         log("unreadable job.json for", job_id, "-",
             "%s: %s" % (type(error).__name__, error))
         return None
+
+
+def list_jobs() -> Iterator[dict]:
+    """Every readable job record in the spool, unordered. Callers must not
+    need to know the spool is a directory of directories."""
+    return filter(None, map(read_job, os.listdir(config.SPOOL)))
 
 
 def write_job(job: dict) -> None:
