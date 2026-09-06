@@ -336,6 +336,15 @@ def main():
             assert job["state"] == "failed", job
             assert job.get("error") == "query matched no elements", job
 
+        # --- one malformed job.json must not 500 the list endpoint
+        os.makedirs(os.path.join(SPOOL, "malformed"), exist_ok=True)
+        with open(os.path.join(SPOOL, "malformed", "job.json"), "w") as f:
+            f.write('{"x": 1}')
+        status, _, body = call(base, "GET", "/jobs")
+        assert status == 200, status
+        assert any(j["id"] == JOB["id"] for j in json.loads(body)), body[:200]
+        shutil.rmtree(os.path.join(SPOOL, "malformed"))
+
         # --- delete = ack + cleanup
         assert call(base, "DELETE", "/jobs/" + JOB["id"])[0] == 200
         assert call(base, "GET", "/jobs/" + JOB["id"])[0] == 404
