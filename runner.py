@@ -73,9 +73,12 @@ def fail(job: dict, error: str) -> None:
     # keep the run's own dict: a re-read would adopt the on-disk record's
     # generation and stomp a re-POSTed job (write_job couldn't tell them apart)
     job["error"] = error
-    kind = classify_error(error)
-    if kind:
-        job["errorKind"] = kind
+    if job.get("state") == "fetching":
+        # only Overpass's own refusals classify -- a bake-stage "out of
+        # memory" from tippecanoe is host pressure, not the query ceiling
+        kind = classify_error(error)
+        if kind:
+            job["errorKind"] = kind
     try:
         set_state(job, "failed")
     except Aborted:
