@@ -49,6 +49,12 @@ DELETE /jobs/:id               (ack -> cleanup)
 - `stats.json` leads with `schemaVersion` (int, currently `1`): additive
   fields don't bump it, removals or meaning changes do. A consumer reads it
   first and refuses what it doesn't understand.
+- `recencyBandsDays` (currently `[90, 365, 730]`) states the cutoffs behind
+  every recency-derived field: `editRecencyBands` / `mapperRecencyBands`
+  bucket by those thresholds (plus an "older" bucket), `recentActivity`
+  counts within the first band, and `qualityMetrics` calls elements fresh
+  within the second band and stale beyond the last. The output is
+  self-describing — no consumer needs out-of-band knowledge of the cutoffs.
 - `failed` carries the Overpass (or stage) error text through.
 - A periodic sweep removes jobs older than a configurable age regardless
   of ack.
