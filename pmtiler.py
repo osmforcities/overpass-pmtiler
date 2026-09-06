@@ -455,11 +455,36 @@ def tag_dimension(key, counts, casing, missing):
     return {"key": key, "kind": "tag", "values": values, "missing": missing}
 
 
+def brace_delta(line):
+    """Net {/} count outside JSON strings for one line. A JSON string cannot
+    hold a literal newline, so every line starts and ends outside a string --
+    per-line scanning needs no carried state. A naive count() breaks on a
+    brace inside a tag value and silently desyncs the element splitter."""
+    if b"{" not in line and b"}" not in line:  # fast path: most lines
+        return 0
+    depth = 0
+    in_string = escaped = False
+    for byte in line:
+        if escaped:
+            escaped = False
+        elif byte == 0x5C:      # backslash
+            escaped = in_string
+        elif byte == 0x22:      # quote
+            in_string = not in_string
+        elif not in_string:
+            if byte == 0x7B:    # {
+                depth += 1
+            elif byte == 0x7D:  # }
+                depth -= 1
+    return depth
+
+
 def convert(inp, outp, tick=None, filter_keys=()):
     """Overpass JSON -> nd-geojson + accumulator stats in one bounded-memory pass.
 
-    Splits the elements array on element boundaries by brace depth (line-based;
-    Overpass pretty-prints), then json.loads per element: 13 MB RSS at 2.23 GB in.
+    Splits the elements array on element boundaries by string-aware brace
+    depth (line-based; Overpass pretty-prints -- anything else fails loudly
+    below), then json.loads per element: 13 MB RSS at 2.23 GB in.
     Ported from spike/convert_fast.py.
     """
     t0 = time.time()
@@ -483,10 +508,17 @@ def convert(inp, outp, tick=None, filter_keys=()):
     # read binary: len(line) is then exact bytes, and json.loads takes bytes, so
     # progress costs nothing (f.tell() is disabled while iterating a text file)
     with open(inp, "rb") as f, open(outp, "w", encoding="utf-8") as out:
+        found = False
         for line in f:  # skip the header, stop at the elements array
             read += len(line)
             if line.startswith(b'  "elements":'):
+                found = True
                 break
+        if not found:
+            # compact or foreign JSON would otherwise convert to 0 features
+            # and surface as a tippecanoe error two stages downstream
+            raise StageError("unexpected overpass response format "
+                             "(expected pretty-printed [out:json] output)")
         depth = 0
         buf = []
         for line in f:
@@ -494,7 +526,7 @@ def convert(inp, outp, tick=None, filter_keys=()):
             s = line.strip()
             if depth == 0:
                 if s.startswith(b"{"):
-                    depth = s.count(b"{") - s.count(b"}")
+                    depth = brace_delta(s)
                     buf = [s]
                     if depth:
                         continue
@@ -505,7 +537,7 @@ def convert(inp, outp, tick=None, filter_keys=()):
                     continue
             else:
                 buf.append(s)
-                depth += s.count(b"{") - s.count(b"}")
+                depth += brace_delta(s)
                 if depth > 0:
                     continue
                 raw = b"".join(buf).rstrip(b",")
@@ -1254,6 +1286,36 @@ def selftest():
             "<html><p>copyright boilerplate</p>"
             "<p><b>Error</b>: line 1: Unknown type &quot;this&quot;</p></html>"
         ) == 'Error : line 1: Unknown type "this"'
+
+        # string-aware brace counting: braces in tag values are data
+        assert brace_delta(b'    "note": "curly { brace",') == 0
+        assert brace_delta(b'  "tags": {') == 1
+        assert brace_delta(b'  "a\\"{": {') == 1  # escaped quote stays inside
+        assert brace_delta(b'},') == -1
+
+        # an unbalanced "{" inside a tag value must not desync the splitter
+        # (before brace_delta it swallowed every following element and charged
+        # the whole loss as skipped=1)
+        braced = os.path.join(d, "braces.json")
+        with open(braced, "w", encoding="utf-8") as f:
+            f.write('{\n  "elements": [\n{\n  "type": "node",\n  "id": 1,\n'
+                    '  "lat": 1.0,\n  "lon": 1.0,\n  "tags": {\n'
+                    '    "note": "curly { brace"\n  }\n},\n{\n'
+                    '  "type": "node",\n  "id": 2,\n  "lat": 2.0,\n'
+                    '  "lon": 2.0\n}\n  ]\n}\n')
+        bs = convert(braced, os.path.join(d, "braces.ndjson"))
+        assert bs["features"] == 2 and bs["skipped"] == 0, bs
+
+        # non-pretty-printed input fails loudly at the convert stage
+        compact = os.path.join(d, "compact.json")
+        with open(compact, "w", encoding="utf-8") as f:
+            f.write('{"version":0.6,"elements":[{"type":"node","id":1,'
+                    '"lat":1.0,"lon":1.0}]}')
+        try:
+            convert(compact, os.path.join(d, "compact.ndjson"))
+            raise AssertionError("compact overpass output must fail loudly")
+        except StageError as e:
+            assert "overpass response format" in str(e), e
 
         # abort seam: a stale run must strand on its next write, both when the
         # dir is gone and when a re-POST recreated it (generation mismatch)

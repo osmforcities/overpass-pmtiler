@@ -214,6 +214,8 @@ def main():
             assert stats["features"] == OFFLINE_FEATURES, stats["features"]
         assert stats["nodes"] + stats["ways"] + stats["relations"] \
             == stats["features"], stats
+        # a nonzero skipped means the element splitter lost data silently
+        assert stats["skipped"] == 0, stats
         assert stats["relations"] > 0, "nwr query must assemble relations"
         if LIVE:
             assert stats["relationsSkipped"] < stats["relations"], stats
