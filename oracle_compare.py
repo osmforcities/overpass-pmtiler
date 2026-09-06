@@ -5,9 +5,25 @@
 
 Runs the fixture through both converters and diffs feature counts by element
 type, then relation geometries (type, ring count, vertex set -- rotation and
-winding insensitive). osmtogeojson is resolved via npx from the app checkout,
-so the exact version the app depends on is the oracle. Exits nonzero on any
-mismatch.
+winding insensitive). osmtogeojson is resolved via npx from a neighbouring
+checkout that has it (PMTILER_APP_DIR, default ../app). Exits nonzero on any
+mismatch, printing at most CAP per kind.
+
+Re-run whenever the pinned osmtogeojson target bumps (regenerate
+POLYGON_FEATURES in convert.py from the new package's polygon-features.json
+first) -- nothing else detects the two converters drifting apart.
+
+fixtures/*.json captures are not in git (up to 11 MB), only the
+.overpassql that produced them. Regenerate by POSTing the query to an
+Overpass instance:
+
+    curl -sk --data-urlencode data@fixtures/delft-mixed.overpassql \\
+        -o fixtures/delft-mixed.json https://localhost:8080/api/interpreter
+
+delft-mixed is the area-decision corpus (#12): Delft highway/barrier/
+man_made/aeroway, 14,518 ways -- where the closed non-area loops live. The
+older delft-parks/amsterdam-parks captures predate query recording and are
+all polygon-all keys, so they exercise relations but never the area ruleset.
 """
 import json
 import os

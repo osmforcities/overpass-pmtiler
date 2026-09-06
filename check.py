@@ -14,7 +14,30 @@ Defaults to the osmforcities dev tunnel (infra/ansible/scripts/overpass-tunnel.s
 --offline replaces the tunnel with an in-process stub Overpass serving the
 selftest fixture, so the whole HTTP contract runs without network or an
 Overpass (tippecanoe still required); only the live-data assertions are
-dropped, replaced with fixture literals.
+dropped, replaced with fixture literals. CI (.github/workflows/check.yml)
+runs the selftest and the offline mode on every push; live stays a manual
+pre-deploy check.
+
+Canonical test areas (any Overpass instance with area support; also the
+one-click buttons in viewer.html):
+
+    case            area                    relation  size            measured
+    small           Delft                   324269    39.6k buildings 25s, 3.8 MB
+    mid             Amsterdam               271110    197k buildings  ~1 min
+    standard metro  Sao Paulo (municipality) 298285   2.14M buildings 9m30s, 53 MB
+    large state     Sao Paulo (state)       298204    2.71M buildings not yet run
+    ceiling         Tokyo Metropolis        1543125   >3 GiB to count fails: too_large
+
+Tokyo stays on purpose: refusing it gracefully is a requirement, so the
+ceiling case must be as easy to run as the happy ones.
+
+Reference measurements (12 vCPU / 64 GB host, 2026-09), Sao Paulo
+building=* end to end ~10 min: fetch 2.23 GB in 312s at 768 MiB maxsize
+(the default 512 MiB fails metro-scale area evaluation), stream-convert
+64s at 13 MB peak RSS, bake 194s at 1.2 GB peak RSS, output 53 MB PMTiles
+(42:1 vs wire). Plan ~3 GB transient disk per metro job. Reproduced on a
+laptop over the SSH tunnel within 5% at every stage -- the pipeline is not
+sensitive to where it runs.
 """
 import json
 import os

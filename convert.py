@@ -1,8 +1,23 @@
 """The convert stage: stream Overpass JSON to nd-geojson plus stats.
 
-One bounded-memory pass. Conversion is defined as osmtogeojson-0.9.2
--compatible and measures as @turf-compatible spherical geodesy -- see the
-README "Compatibility targets" section.
+One bounded-memory pass (~13 MB RSS at 2.23 GB input). Element-boundary
+splitting + per-element json.loads is the only approach that survives
+metro scale: token-level streaming parsers measured ~40x slower, and
+whole-collection converters (osmtogeojson itself) are superlinear.
+
+Compatibility targets -- the outputs are defined against two ecosystem
+standards, not against any consumer:
+
+- Conversion is osmtogeojson-0.9.2-compatible: same polygon-detection
+  ruleset (POLYGON_FEATURES below), same multipolygon/boundary relation
+  assembly, same member-node emission (bare Points, _ts 0). Anyone
+  migrating off client-side osmtogeojson gets identical feature counts
+  and geometry types; oracle_compare.py is the drift detector.
+- Measures (geometryMix lineKm/areaKm2) are @turf-compatible spherical
+  geodesy (haversine + Chamberlain-Duquette, EARTH_R), bit-for-bit.
+
+osmforcities is the first consumer and leaned on this bit-parity while
+migrating off client-side conversion; the contracts stand on their own.
 """
 import datetime
 import json

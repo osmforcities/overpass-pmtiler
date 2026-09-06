@@ -75,6 +75,8 @@ def progress_writer(job: dict, stage: str,
 
 
 def sweep() -> None:
+    """Delete job dirs older than MAX_AGE_DAYS. Runs at startup and after
+    each job rather than on a timer -- an idle service never sweeps."""
     cutoff = time.time() - config.MAX_AGE_DAYS * DAY
     for name in os.listdir(config.SPOOL):
         path = os.path.join(config.SPOOL, name)
