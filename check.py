@@ -406,6 +406,16 @@ def main():
         assert any(j["id"] == JOB["id"] for j in json.loads(body)), body[:200]
         shutil.rmtree(os.path.join(SPOOL, "malformed"))
 
+        # --- /status: the dashboard + monitoring surface
+        status, snapshot = get_json(base, "/status")
+        assert status == 200, status
+        assert snapshot["queueDepth"] == 0, snapshot
+        assert snapshot["jobStates"].get("done", 0) >= 1, snapshot
+        assert snapshot["jobStates"].get("failed", 0) >= 1, snapshot
+        assert snapshot["spoolBytes"] > 0, snapshot
+        assert snapshot["diskFreeBytes"] > 0, snapshot
+        assert snapshot["uptimeSeconds"] >= 0, snapshot
+
         # --- crash recovery (#9): kill mid-run, restart, jobs resume FIFO
         if not LIVE:
             # seed a job that "crashed mid-bake long ago": recover() must
