@@ -26,30 +26,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SPOOL = os.path.abspath(os.environ.get("PMTILER_SPOOL", "spool"))
-OVERPASS = os.environ.get("PMTILER_OVERPASS", "http://localhost/api/interpreter")
-PORT = int(os.environ.get("PMTILER_PORT", "8099"))
-BIND = os.environ.get("PMTILER_BIND", "127.0.0.1")
-INSECURE = os.environ.get("PMTILER_INSECURE") == "1"
-NICE = os.environ.get("PMTILER_NICE", "10")
-MAX_AGE_DAYS = float(os.environ.get("PMTILER_MAX_AGE_DAYS", "7"))
-
-ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-MAX_QUERY = 64 * 1024
-MAX_MAXSIZE = 4 * 1024 ** 3
-MAX_TIMEOUT = 3600
-RUNNING = ("fetching", "converting", "baking")
-OUTPUTS = {
-    "output.pmtiles": "application/octet-stream",
-    "stats.json": "application/json",
-    "data.ndjson": "application/x-ndjson",
-}
-
-DAY = 86400
-BANDS = (90 * DAY, 365 * DAY, 730 * DAY)  # emitted as stats recencyBandsDays
-EARTH_R = 6371008.8  # turf's sphere radius: measures match @turf/length+area
-MAX_FILTER_KEYS = 32
+import config
+from config import (HERE, ID_RE, MAX_QUERY, MAX_MAXSIZE, MAX_TIMEOUT,
+                    RUNNING, OUTPUTS, DAY, BANDS, EARTH_R, MAX_FILTER_KEYS,
+                    log, now_iso)
 
 # osm-polygon-features 0.9.2, vendored (27 rules, no dependency): which tags make
 # a closed way an area. key -> True (any value) | ("in"|"ex", frozenset(values)).
@@ -114,18 +94,10 @@ class Aborted(Exception):
     stage_bake additionally kills its tippecanoe subprocess on unwind."""
 
 
-def now_iso():
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-
-def log(*a):
-    print(now_iso(), *a, flush=True)
-
-
 # --- spool -----------------------------------------------------------------
 
 def jobdir(jid):
-    return os.path.join(SPOOL, jid)
+    return os.path.join(config.SPOOL, jid)
 
 
 def read_job(jid):
@@ -181,9 +153,9 @@ def progress_writer(job, stage, interval=1.0):
 
 
 def sweep():
-    cutoff = time.time() - MAX_AGE_DAYS * DAY
-    for name in os.listdir(SPOOL):
-        path = os.path.join(SPOOL, name)
+    cutoff = time.time() - config.MAX_AGE_DAYS * DAY
+    for name in os.listdir(config.SPOOL):
+        path = os.path.join(config.SPOOL, name)
         try:
             if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
                 shutil.rmtree(path, ignore_errors=True)
@@ -195,7 +167,7 @@ def sweep():
 def recover():
     """Crash recovery: running states go back to queued, then re-enqueue FIFO."""
     pending = []
-    for name in os.listdir(SPOOL):
+    for name in os.listdir(config.SPOOL):
         job = read_job(name)
         if not job:
             continue
@@ -256,9 +228,9 @@ def stage_fetch(job, path):
     query = apply_settings(job["query"], job.get("maxsize"), job.get("timeout"))
     data = urllib.parse.urlencode({"data": query}).encode()
     req = urllib.request.Request(
-        OVERPASS, data=data,
+        config.OVERPASS, data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"})
-    ctx = ssl._create_unverified_context() if INSECURE else None
+    ctx = ssl._create_unverified_context() if config.INSECURE else None
     tick = progress_writer(job, "fetching")
     try:
         with urllib.request.urlopen(
@@ -729,7 +701,7 @@ PROGRESS_RE = re.compile(r'^\{"progress":\s*([\d.]+)\}$')
 
 def stage_bake(job, jd):
     out = os.path.join(jd, "output.pmtiles")
-    cmd = ["nice", "-n", NICE, "tippecanoe", "-f", "-zg",
+    cmd = ["nice", "-n", config.NICE, "tippecanoe", "-f", "-zg",
            "--drop-densest-as-needed", "-P", "-l", "features",
            # --json-progress replaces the \r-redrawn bar with one line per tick,
            # and leaves real errors on stderr untouched
@@ -908,7 +880,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(200, sorted(
                 ({"id": j.get("id"), "state": j.get("state"),
                   "startedAt": j.get("startedAt"), "progress": j.get("progress")}
-                 for j in filter(None, map(read_job, os.listdir(SPOOL)))),
+                 for j in filter(None, map(read_job, os.listdir(config.SPOOL)))),
                 key=lambda j: j["startedAt"] or "", reverse=True))
         jid, name = self.parse()
         if not jid:
@@ -989,13 +961,13 @@ class Server(http.server.ThreadingHTTPServer):
 
 
 def serve():
-    os.makedirs(SPOOL, exist_ok=True)
+    os.makedirs(config.SPOOL, exist_ok=True)
     sweep()
     recover()
     threading.Thread(target=worker, daemon=True).start()
-    httpd = Server((BIND, PORT), Handler)
+    httpd = Server((config.BIND, config.PORT), Handler)
     log("pmtiler on http://%s:%d spool=%s overpass=%s"
-        % (BIND, httpd.server_address[1], SPOOL, OVERPASS))
+        % (config.BIND, httpd.server_address[1], config.SPOOL, config.OVERPASS))
     httpd.serve_forever()
 
 
@@ -1319,8 +1291,7 @@ def selftest():
 
         # abort seam: a stale run must strand on its next write, both when the
         # dir is gone and when a re-POST recreated it (generation mismatch)
-        global SPOOL
-        old_spool, SPOOL = SPOOL, os.path.join(d, "spool")
+        old_spool, config.SPOOL = config.SPOOL, os.path.join(d, "spool")
         try:
             job = {"id": "j1", "state": "queued", "startedAt": now_iso()}
             os.makedirs(jobdir("j1"))
@@ -1360,7 +1331,7 @@ def selftest():
             # sweep: age is last-write mtime; stale dirs go, fresh ones stay
             os.makedirs(jobdir("stale"))
             os.makedirs(jobdir("fresh"))
-            old_t = time.time() - (MAX_AGE_DAYS + 1) * DAY
+            old_t = time.time() - (config.MAX_AGE_DAYS + 1) * DAY
             os.utime(jobdir("stale"), (old_t, old_t))
             sweep()
             assert not os.path.isdir(jobdir("stale"))
@@ -1383,7 +1354,7 @@ def selftest():
             r1 = read_job("r1")
             assert r1["state"] == "queued" and "progress" not in r1, r1
         finally:
-            SPOOL = old_spool
+            config.SPOOL = old_spool
 
         # validate_pmtiles: garbage must not pass as an archive
         bad = os.path.join(d, "bad.pmtiles")
