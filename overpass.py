@@ -1,7 +1,8 @@
 """The fetch stage: stream one Overpass query result to disk.
 
 Also owns the query settings merge and the two ways Overpass reports
-errors -- an HTML error page, and a "remark" key in an otherwise-200 body.
+errors -- an HTML error page (under any status, 200 included), and a
+"remark" key in an otherwise-200 body.
 """
 import html
 import os
@@ -62,6 +63,24 @@ def html_error(body: str) -> str:
     return text[:2000] or "overpass returned an error"
 
 
+def head_error(path: str) -> str | None:
+    """Overpass sometimes answers 200 with its HTML error page instead of data
+    (the areas dispatcher refusing, for one). [out:json] output never starts
+    with "<", so markup carrying an "Error:" line is an error page -- caught
+    here, the real text reaches the job record and classifies, instead of
+    surfacing a stage later as a converter format complaint.
+
+    Markup without that line is not an error: a caller who asked for [out:xml]
+    gets the converter's format complaint, which names the real problem better
+    than the copyright boilerplate html_error would return for it."""
+    with open(path, "rb") as f:
+        head = f.read(8192)  # the page is a few hundred bytes; html_error caps at 2000
+    if head.lstrip()[:1] != b"<":
+        return None
+    text = html_error(head.decode("utf-8", "replace"))
+    return text if text.startswith("Error") else None  # html_error anchors there
+
+
 def tail_remark(path: str) -> str | None:
     """Overpass reports runtime errors as a "remark" key in an otherwise-200 body."""
     size = os.path.getsize(path)
@@ -101,6 +120,9 @@ def stage_fetch(job: dict, path: str) -> None:
     except TimeoutError:
         raise StageError("overpass read timed out after %ds"
                          % ((job.get("timeout") or 180) + 60))
+    error_text = head_error(path)
+    if error_text:
+        raise StageError(error_text)
     remark = tail_remark(path)
     if remark:
         raise StageError(remark)

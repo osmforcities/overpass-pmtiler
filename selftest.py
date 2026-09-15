@@ -11,7 +11,8 @@ from bake import PROGRESS_RE, validate_pmtiles
 from config import DAY, now_iso
 from convert import brace_delta, convert, is_area
 from errors import Aborted, StageError
-from overpass import apply_settings, classify_error, html_error, tail_remark
+from overpass import (apply_settings, classify_error, head_error,
+                      html_error, tail_remark)
 from runner import Q, recover
 from spool import (job_directory, list_jobs, progress_writer, read_job,
                    sweep, write_job)
@@ -172,6 +173,16 @@ FIXTURE = '''{
   ]
 }
 '''
+
+# The page Overpass serves instead of data when it refuses a query, shaped like
+# the real one (an areas-dispatcher refusal). check.py's stub serves it as
+# pmtiler.ERROR_PAGE, so both checks exercise one body.
+ERROR_PAGE = ('<?xml version="1.0" encoding="UTF-8"?>\n<html><body>'
+              '<p>copyright boilerplate</p>'
+              '<p><strong style="color:#FF0000">Error</strong>: runtime error:'
+              ' open64: 0 Success /osm3s_areas Dispatcher_Client'
+              '::request_read_and_idx::protocol_error</p>'
+              '</body></html>\n')
 
 
 def selftest():
@@ -468,6 +479,27 @@ def selftest():
             f.write('{\n  "elements": [\n{\n  "type": "node",\n'
                     '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ]\n}\n')
         assert tail_remark(remark_tail_path) is None
+
+        # head_error: Overpass can answer 200 with its HTML error page, and
+        # the converter would blame the response format instead of Overpass
+        head_path = os.path.join(scratch_dir, "head.json")
+        with open(head_path, "w", encoding="utf-8") as f:
+            f.write(ERROR_PAGE)
+        head_text = head_error(head_path)
+        assert head_text.startswith("Error : runtime error:"), head_text
+        assert classify_error(head_text) == "too_large", head_text
+        # anything else is data, however it is shaped: no false error
+        for body in ('{\n  "elements": [\n{\n  "type": "node"\n}\n  ]\n}\n',
+                     # markup with no "Error:" line: an [out:xml] body keeps
+                     # the converter's format complaint, which says more than
+                     # the copyright boilerplate html_error would return
+                     '<?xml version="1.0"?>\n<osm version="0.6">\n<note>The'
+                     ' data included in this document is from OSM.</note>\n'
+                     '<node id="1" lat="1.0" lon="1.0"/>\n</osm>\n',
+                     ""):  # a truncated or empty body is not an error page
+            with open(head_path, "w", encoding="utf-8") as f:
+                f.write(body)
+            assert head_error(head_path) is None, body[:40]
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
     print("selftest ok")

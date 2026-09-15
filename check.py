@@ -101,6 +101,15 @@ if not LIVE:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif "dispatcher_error" in query:
+                # the other over-ceiling shape: status 200, but the body is
+                # Overpass's HTML error page rather than [out:json] data
+                body = pmtiler.ERROR_PAGE.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif "nothing_matches" in query:
                 body = b'{\n  "elements": [\n  ]\n}\n'  # valid, zero elements
                 self.send_response(200)
@@ -416,6 +425,18 @@ def main():
             assert "out of memory" in job.get("error", ""), job
             broken_job = json.loads(call(base, "GET", "/jobs/check-broken")[2])
             assert "errorKind" not in broken_job, broken_job
+
+            # a 200 HTML error page must fail in the fetch stage with
+            # Overpass's own text (and classify), not reach the converter
+            page = {"id": "check-html-error",
+                    "query": "dispatcher_error out;", "timeout": 30}
+            assert call(base, "POST", "/jobs", page)[0] == 202
+            job, seen = poll(base, page["id"])
+            assert job["state"] == "failed", job
+            assert job.get("errorKind") == "too_large", job
+            assert "Dispatcher_Client" in job.get("error", ""), job
+            assert "response format" not in job.get("error", ""), job
+            assert "converting" not in seen, seen
 
         # --- one malformed job.json must not 500 the list endpoint
         os.makedirs(os.path.join(SPOOL, "malformed"), exist_ok=True)

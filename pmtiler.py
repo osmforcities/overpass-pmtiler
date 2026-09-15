@@ -21,7 +21,8 @@ contract, and each module for one concern:
 import sys
 
 from convert import convert  # noqa: F401  oracle_compare.py uses pmtiler.convert
-from selftest import FIXTURE, selftest  # noqa: F401  check.py uses pmtiler.FIXTURE
+# noqa: F401  check.py uses pmtiler.FIXTURE and pmtiler.ERROR_PAGE
+from selftest import ERROR_PAGE, FIXTURE, selftest  # noqa: F401
 from server import serve
 
 if __name__ == "__main__":
