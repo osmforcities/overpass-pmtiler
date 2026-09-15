@@ -323,7 +323,10 @@ def convert(input_path: str, output_path: str,
                 break
         if not found:
             # compact or foreign JSON would otherwise convert to 0 features
-            # and surface as a tippecanoe error two stages downstream
+            # and surface as a tippecanoe error two stages downstream. An
+            # Overpass error page never lands here: the fetch stage claims
+            # markup carrying an "Error:" line, so this is the caller's own
+            # response format (an [out:xml] query, say), not a refusal.
             raise StageError("unexpected overpass response format "
                              "(expected pretty-printed [out:json] output)")
         depth = 0
