@@ -12,6 +12,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import requests
+
 import config
 from config import log
 from errors import StageError
