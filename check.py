@@ -10,7 +10,8 @@ the first failed assertion.
 
     python3 check.py --offline
 
-Defaults to the osmforcities dev tunnel (infra/ansible/scripts/overpass-tunnel.sh).
+Defaults to an Overpass tunnelled to https://localhost:8080 with a self-signed
+cert (hence PMTILER_INSECURE=1); set PMTILER_OVERPASS to point elsewhere.
 --offline replaces the tunnel with an in-process stub Overpass serving the
 selftest fixture, so the whole HTTP contract runs without network or an
 Overpass (tippecanoe still required); only the live-data assertions are
@@ -35,7 +36,7 @@ the line-geometry counterpart to the building runs (2026-09 measurement:
 173,470 LineStrings + 712 areas, 23,036 lineKm, convert 6.9s at 46 MB
 RSS) -- a metro's streets are ~20x cheaper than its buildings.
 
-Reference measurements (12 vCPU / 64 GB host, 2026-09), Sao Paulo
+Reference measurements (2026-09, a multi-core server), Sao Paulo
 building=* end to end ~10 min: fetch 2.23 GB in 312s at 768 MiB maxsize
 (the default 512 MiB fails metro-scale area evaluation), stream-convert
 64s at 13 MB peak RSS, bake 194s at 1.2 GB peak RSS, output 53 MB PMTiles
