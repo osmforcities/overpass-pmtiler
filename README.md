@@ -65,6 +65,13 @@ Configured entirely by env var: `PMTILER_SPOOL`, `PMTILER_OVERPASS`,
 Open `http://127.0.0.1:8099/` for a browser UI: submit a job, watch its
 stages, render the archive on a map colored by feature age.
 
+## Contributing
+
+- Branch from `main`, open the PR into `main`.
+- Before pushing, run what CI runs: `python3 pmtiler.py --selftest` and `python3 check.py --offline` (needs `tippecanoe` on PATH; no Overpass needed).
+- Code follows [CODING_STANDARDS.md](CODING_STANDARDS.md); PR review checks against it. Domain terms are in [CONTEXT.md](CONTEXT.md).
+- A change to the HTTP surface or `stats.json` updates [API.md](API.md) and gets an assertion in `check.py` in the same PR.
+
 ## More
 
 - **[API.md](API.md)** — the job contract, interface invariants, and the

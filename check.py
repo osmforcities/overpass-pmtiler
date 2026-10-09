@@ -381,7 +381,8 @@ def main():
         assert call(base, "POST", "/jobs", {"id": ".", "query": "x"})[0] == 400
         assert call(base, "DELETE", "/jobs/..")[0] == 404
         assert os.path.isdir(SPOOL), "spool parent must survive DELETE /jobs/.."
-        assert call(base, "POST", "/jobs", {"id": "ok", "query": ""})[0] == 400
+        status, _, body = call(base, "POST", "/jobs", {"id": "ok", "query": ""})
+        assert status == 400 and "error" in json.loads(body), body
         assert call(base, "POST", "/jobs",
                     {"id": "ok", "query": "x", "timeout": 99999})[0] == 400
         assert call(base, "POST", "/jobs",
@@ -514,7 +515,9 @@ def main():
                   % (killed, interrupted))
 
         # --- delete = ack + cleanup
-        assert call(base, "DELETE", "/jobs/" + JOB["id"])[0] == 200
+        status, _, body = call(base, "DELETE", "/jobs/" + JOB["id"])
+        assert status == 200 and json.loads(body) == {
+            "id": JOB["id"], "state": "deleted"}, body
         assert call(base, "GET", "/jobs/" + JOB["id"])[0] == 404
         assert not os.path.exists(os.path.join(SPOOL, JOB["id"]))
 
