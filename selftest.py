@@ -513,18 +513,16 @@ def selftest():
                 config.OVERPASS, overpass.READ_SLACK = old_overpass, old_slack
 
             # a failing tippecanoe ends the job failed with its last 20 stderr
-            # lines, progress ticks left out: a shim earlier on PATH stands in
+            # lines capped at 2000 chars, progress ticks left out: a shim
+            # earlier on PATH stands in
             shim_dir = os.path.join(scratch_dir, "bin")
             os.makedirs(shim_dir)
             shim_path = os.path.join(shim_dir, "tippecanoe")
-            with open(shim_path, "w") as f:
-                f.write('#!/bin/sh\necho \'{"progress":12.5}\' >&2\n'
-                        'for i in $(seq 1 25); do echo "bad input $i" >&2; done\n'
-                        'exit 1\n')
-            os.chmod(shim_path, 0o755)
 
-            class Data(http.server.BaseHTTPRequestHandler):
+            class FixtureOverpass(http.server.BaseHTTPRequestHandler):
                 def do_POST(self):
+                    # an unread body makes the close a TCP reset
+                    self.rfile.read(int(self.headers["Content-Length"]))
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(FIXTURE.encode())
@@ -533,24 +531,38 @@ def selftest():
                     pass
 
             data_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
-                                                          Data)
+                                                          FixtureOverpass)
             threading.Thread(target=data_server.serve_forever,
                              daemon=True).start()
-            old_path = os.environ["PATH"]
+            old_overpass, old_path = config.OVERPASS, os.environ["PATH"]
             try:
                 config.OVERPASS = "http://127.0.0.1:%d/api/interpreter" % \
                     data_server.server_address[1]
                 os.environ["PATH"] = shim_dir + os.pathsep + old_path
-                os.makedirs(job_directory("bake"))
-                write_job({"id": "bake", "query": "way;out;", "state": "queued",
-                           "startedAt": now_iso()})
-                run_job("bake")
-                failed = read_job("bake")
-                assert failed["state"] == "failed", failed
-                error = failed["error"]
+                errors = {}
+                for jid, stderr in (
+                        ("bake", 'for i in $(seq 1 25); do '
+                                 'echo "bad input $i" >&2; done\n'),
+                        ("bake-long", 'printf "%03000d\\n" 0 >&2\n')):
+                    # progress last: inside the 20-line tail, so only the
+                    # filter keeps it out of the error
+                    with open(shim_path, "w") as f:
+                        f.write('#!/bin/sh\n' + stderr
+                                + 'echo \'{"progress":12.5}\' >&2\nexit 1\n')
+                    os.chmod(shim_path, 0o755)
+                    os.makedirs(job_directory(jid))
+                    write_job({"id": jid, "query": "way;out;",
+                               "state": "queued", "startedAt": now_iso()})
+                    run_job(jid)
+                    failed = read_job(jid)
+                    assert failed["state"] == "failed", failed
+                    errors[jid] = failed["error"]
+                error = errors["bake"]
                 assert error.startswith("tippecanoe: bad input 6\n"), error
                 assert error.endswith("bad input 25"), error
                 assert "progress" not in error, error
+                assert errors["bake-long"] == "tippecanoe: " + "0" * 2000, \
+                    errors["bake-long"][:80]
             finally:
                 os.environ["PATH"] = old_path
                 data_server.shutdown()
