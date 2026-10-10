@@ -101,6 +101,8 @@ if not LIVE:
             end = query.find(";")
             if query.startswith("[") and end != -1:
                 query = query[end + 1:]
+            load_page = next((page for marker, page in LOAD_PAGES.items()
+                              if marker in query), None)
             if "huge_area" in query:
                 # over-ceiling: Overpass answers 200 with a runtime remark
                 body = ('{\n  "elements": [\n  ],\n  "remark": "runtime error:'
@@ -120,11 +122,10 @@ if not LIVE:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif any(marker in query for marker in LOAD_PAGES):
+            elif load_page:
                 # load refusals, worded like the real pages: both name
                 # Dispatcher_Client, the same token as an areas refusal
-                status, reason = next(page for marker, page
-                                      in LOAD_PAGES.items() if marker in query)
+                status, reason = load_page
                 body = ('<html><p>copyright boilerplate</p><p><strong>Error'
                         '</strong>: runtime error: open64: 0 Success'
                         ' /osm3s_osm_base Dispatcher_Client::'

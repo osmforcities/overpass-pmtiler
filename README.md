@@ -54,7 +54,7 @@ stats back.
 
 ```
 python3 pmtiler.py             # serve on 127.0.0.1:8099
-python3 pmtiler.py --selftest  # self-checks, no network
+python3 pmtiler.py --selftest  # self-checks, loopback only
 python3 check.py --offline     # full HTTP contract against a stub Overpass
 ```
 

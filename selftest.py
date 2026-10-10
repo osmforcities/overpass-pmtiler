@@ -1,4 +1,5 @@
-"""Self-check for the converter and the spool machinery -- no network, no
+"""Self-check for the converter and the spool machinery, plus fetch
+transport failures against loopback sockets only -- no external network, no
 tippecanoe. Run via `python3 pmtiler.py --selftest`. Plain asserts, one
 fixture, no framework."""
 import json
