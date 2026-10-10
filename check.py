@@ -15,9 +15,9 @@ cert (hence PMTILER_INSECURE=1); set PMTILER_OVERPASS to point elsewhere.
 --offline replaces the tunnel with an in-process stub Overpass serving the
 selftest fixture, so the whole HTTP contract runs without network or an
 Overpass (tippecanoe and pgrep still required); only the live-data
-assertions are dropped, replaced with fixture literals. CI (.github/workflows/check.yml)
-runs the selftest and the offline mode on every push; live stays a manual
-pre-deploy check.
+assertions are dropped, replaced with fixture literals. CI
+(.github/workflows/check.yml) runs the selftest and the offline mode on
+every push; live stays a manual pre-deploy check.
 
 Canonical test areas (any Overpass instance with area support; also the
 one-click buttons in viewer.html):
@@ -91,6 +91,13 @@ if not LIVE:
 
         protocol_version = "HTTP/1.0"  # Content-Length framing, no keep-alive
 
+        def reply(self, status, content_type, body):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self):
             length = int(self.headers.get("Content-Length") or 0)
             form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
@@ -108,20 +115,12 @@ if not LIVE:
                 body = ('{\n  "elements": [\n  ],\n  "remark": "runtime error:'
                         ' Query run out of memory using about 2048 MB of'
                         ' RAM."\n}\n').encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.reply(200, "application/json", body)
             elif "dispatcher_error" in query:
                 # the other over-ceiling shape: status 200, but the body is
                 # Overpass's HTML error page rather than [out:json] data
                 body = pmtiler.ERROR_PAGE.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.reply(200, "text/html", body)
             elif load_page:
                 # load refusals, worded like the real pages: both name
                 # Dispatcher_Client, the same token as an areas refusal
@@ -130,18 +129,10 @@ if not LIVE:
                         '</strong>: runtime error: open64: 0 Success'
                         ' /osm3s_osm_base Dispatcher_Client::'
                         'request_read_and_idx::%s</p></html>' % reason).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "text/html")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.reply(status, "text/html", body)
             elif "nothing_matches" in query:
                 body = b'{\n  "elements": [\n  ]\n}\n'  # valid, zero elements
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.reply(200, "application/json", body)
             elif "dense_points" in query:
                 # 200k nodes packed into one city-sized box: tippecanoe bakes
                 # them for seconds, long enough to DELETE the job mid-bake
@@ -151,11 +142,7 @@ if not LIVE:
                     % (i + 1, 52 + i % 500 * 0.0001, 4.3 + i // 500 * 0.00025)
                     for i in range(200000))
                 body = ('{\n  "elements": [\n%s\n  ]\n}\n' % elements).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.reply(200, "application/json", body)
             elif "out" in query:
                 # Pad past 1 MB: the service reads in 1 MiB chunks and a
                 # buffered read blocks until the chunk is full, so the first
@@ -182,11 +169,7 @@ if not LIVE:
                 body = ('<html><p>copyright boilerplate</p>'
                         '<p><b>Error</b>: line 1: parse error - Unknown type '
                         '&quot;this&quot;</p></html>').encode()
-                self.send_response(400)
-                self.send_header("Content-Type", "text/html")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.reply(400, "text/html", body)
 
         def log_message(self, *a):
             pass
@@ -619,10 +602,10 @@ def main():
                         "query": "hold_fetch out;", "timeout": 30}
             baking = {"id": "check-delete-baking",
                       "query": "dense_points out;", "timeout": 30}
-            after = {"id": "check-after-delete", "query": JOB["query"],
-                     "timeout": 30}
-            for queued in (fetching, baking, after):
-                assert call(base, "POST", "/jobs", queued)[0] == 202
+            next_job = {"id": "check-after-delete", "query": JOB["query"],
+                        "timeout": 30}
+            for job in (fetching, baking, next_job):
+                assert call(base, "POST", "/jobs", job)[0] == 202
 
             def deleted_mid_run(job_id, running):
                 # stub jobs run in seconds: fail fast, not after DEADLINE
@@ -647,11 +630,11 @@ def main():
             # would still be baking here
             assert not tippecanoe_running(baking_dir), "tippecanoe orphaned"
 
-            job, _ = poll(base, after["id"])
+            job, _ = poll(base, next_job["id"])
             assert job["state"] == "done", job
-            for victim in (fetching, baking):
-                assert call(base, "GET", "/jobs/" + victim["id"])[0] == 404
-                assert not os.path.exists(os.path.join(SPOOL, victim["id"]))
+            for deleted in (fetching, baking):
+                assert call(base, "GET", "/jobs/" + deleted["id"])[0] == 404
+                assert not os.path.exists(os.path.join(SPOOL, deleted["id"]))
             print("delete mid-run: fetching and baking aborted, next job done")
 
         # --- delete = ack + cleanup
