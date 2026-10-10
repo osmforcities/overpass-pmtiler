@@ -134,13 +134,13 @@ if not LIVE:
                 body = b'{\n  "elements": [\n  ]\n}\n'  # valid, zero elements
                 self.reply(200, "application/json", body)
             elif "dense_points" in query:
-                # 200k nodes packed into one city-sized box: tippecanoe bakes
+                # 400k nodes packed into one city-sized box: tippecanoe bakes
                 # them for seconds, long enough to DELETE the job mid-bake
                 elements = ",\n".join(
                     '{"type":"node","id":%d,"lat":%.5f,"lon":%.5f,'
                     '"tags":{"amenity":"bench"}}'
                     % (i + 1, 52 + i % 500 * 0.0001, 4.3 + i // 500 * 0.00025)
-                    for i in range(200000))
+                    for i in range(400000))
                 body = ('{\n  "elements": [\n%s\n  ]\n}\n' % elements).encode()
                 self.reply(200, "application/json", body)
             elif "out" in query:
