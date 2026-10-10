@@ -543,7 +543,7 @@ def selftest():
                 for jid, stderr in (
                         ("bake", 'for i in $(seq 1 25); do '
                                  'echo "bad input $i" >&2; done\n'),
-                        ("bake-long", 'printf "%03000d\\n" 0 >&2\n')):
+                        ("bake-long", 'printf "head %03000d tail\\n" 0 >&2\n')):
                     # progress last: inside the 20-line tail, so only the
                     # filter keeps it out of the error
                     with open(shim_path, "w") as f:
@@ -561,7 +561,9 @@ def selftest():
                 assert error.startswith("tippecanoe: bad input 6\n"), error
                 assert error.endswith("bad input 25"), error
                 assert "progress" not in error, error
-                assert errors["bake-long"] == "tippecanoe: " + "0" * 2000, \
+                # the cap keeps the end, where tippecanoe's fatal line sits
+                assert errors["bake-long"] == \
+                    "tippecanoe: " + "0" * 1995 + " tail", \
                     errors["bake-long"][:80]
             finally:
                 os.environ["PATH"] = old_path
