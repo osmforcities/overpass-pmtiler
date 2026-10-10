@@ -1,7 +1,7 @@
 """Self-check for the converter and the spool machinery, plus fetch
-transport failures against loopback sockets only -- no external network, no
-tippecanoe. Run via `python3 pmtiler.py --selftest`. Plain asserts, one
-fixture, no framework."""
+transport failures against loopback sockets only and a bake failure against a
+tippecanoe shim -- no external network, never the real tippecanoe. Run via
+`python3 pmtiler.py --selftest`. Plain asserts, one fixture, no framework."""
 import json
 import os
 import http.server
@@ -511,6 +511,51 @@ def selftest():
                 limiter.shutdown()
                 limiter.server_close()
                 config.OVERPASS, overpass.READ_SLACK = old_overpass, old_slack
+
+            # a failing tippecanoe ends the job failed with its last 20 stderr
+            # lines, progress ticks left out: a shim earlier on PATH stands in
+            shim_dir = os.path.join(scratch_dir, "bin")
+            os.makedirs(shim_dir)
+            shim_path = os.path.join(shim_dir, "tippecanoe")
+            with open(shim_path, "w") as f:
+                f.write('#!/bin/sh\necho \'{"progress":12.5}\' >&2\n'
+                        'for i in $(seq 1 25); do echo "bad input $i" >&2; done\n'
+                        'exit 1\n')
+            os.chmod(shim_path, 0o755)
+
+            class Data(http.server.BaseHTTPRequestHandler):
+                def do_POST(self):
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(FIXTURE.encode())
+
+                def log_message(self, *a):
+                    pass
+
+            data_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
+                                                          Data)
+            threading.Thread(target=data_server.serve_forever,
+                             daemon=True).start()
+            old_path = os.environ["PATH"]
+            try:
+                config.OVERPASS = "http://127.0.0.1:%d/api/interpreter" % \
+                    data_server.server_address[1]
+                os.environ["PATH"] = shim_dir + os.pathsep + old_path
+                os.makedirs(job_directory("bake"))
+                write_job({"id": "bake", "query": "way;out;", "state": "queued",
+                           "startedAt": now_iso()})
+                run_job("bake")
+                failed = read_job("bake")
+                assert failed["state"] == "failed", failed
+                error = failed["error"]
+                assert error.startswith("tippecanoe: bad input 6\n"), error
+                assert error.endswith("bad input 25"), error
+                assert "progress" not in error, error
+            finally:
+                os.environ["PATH"] = old_path
+                data_server.shutdown()
+                data_server.server_close()
+                config.OVERPASS = old_overpass
         finally:
             config.SPOOL = old_spool
 
@@ -523,6 +568,14 @@ def selftest():
             raise AssertionError("garbage archive must fail validation")
         except StageError:
             pass
+        # a well-formed v3 header addressing zero tiles is an empty bake
+        with open(bad, "wb") as f:
+            f.write(b"PMTiles\x03" + bytes(119))
+        try:
+            validate_pmtiles(bad)
+            raise AssertionError("zero-tile archive must fail validation")
+        except StageError as e:
+            assert str(e) == "bake produced an archive with no tiles", e
 
         # tail_remark: a top-level remark (2-space indent) is a runtime
         # error; the OSM tag remark=* on an element is data, not an error
