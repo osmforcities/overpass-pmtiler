@@ -1,19 +1,24 @@
-"""Self-check for the converter and the spool machinery -- no network, no
+"""Self-check for the converter and the spool machinery, plus fetch
+transport failures against loopback sockets only -- no external network, no
 tippecanoe. Run via `python3 pmtiler.py --selftest`. Plain asserts, one
 fixture, no framework."""
 import json
 import os
+import http.server
 import shutil
+import socket
+import threading
 import time
 
 import config
+import overpass
 from bake import PROGRESS_RE, validate_pmtiles
 from config import DAY, now_iso
 from convert import brace_delta, convert, is_area
 from errors import Aborted, StageError
 from overpass import (apply_settings, classify_error, head_error,
                       html_error, tail_remark)
-from runner import Q, recover
+from runner import Q, recover, run_job
 from spool import (job_directory, list_jobs, progress_writer, read_job,
                    sweep, write_job)
 
@@ -454,6 +459,58 @@ def selftest():
             # record-less "fresh" dir are skipped
             ids = sorted(job["id"] for job in list_jobs())
             assert ids == ["j1", "r1", "r2"], ids
+
+            # fetch transport failures end the job failed, unclassified:
+            # a just-closed port refuses the connection, a listener that
+            # never accepts takes the request into its backlog and never
+            # answers (READ_SLACK shrunk so the wait is 1 s, not 240), and
+            # a 429 whose page names Dispatcher_Client must not classify
+            old_overpass, old_slack = config.OVERPASS, overpass.READ_SLACK
+            with socket.socket() as closed:
+                closed.bind(("127.0.0.1", 0))
+                closed_port = closed.getsockname()[1]
+            stalled = socket.socket()
+
+            class RateLimited(http.server.BaseHTTPRequestHandler):
+                def do_POST(self):
+                    self.send_error(429, explain=(
+                        "Error: runtime error: open64: 0 Success"
+                        " /osm3s_osm_base Dispatcher_Client::"
+                        "request_read_and_idx::rate_limited"))
+
+                def log_message(self, *a):
+                    pass
+
+            limiter = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
+                                                      RateLimited)
+            threading.Thread(target=limiter.serve_forever, daemon=True).start()
+            try:
+                stalled.bind(("127.0.0.1", 0))
+                stalled.listen()
+                overpass.READ_SLACK = 0
+                for jid, port, prefix, detail in (
+                        ("down", closed_port, "overpass unreachable: ",
+                         "refused"),
+                        ("stall", stalled.getsockname()[1],
+                         "overpass read timed out after 1s", ""),
+                        ("limited", limiter.server_address[1], "Error",
+                         "rate_limited")):
+                    config.OVERPASS = \
+                        "http://127.0.0.1:%d/api/interpreter" % port
+                    os.makedirs(job_directory(jid))
+                    write_job({"id": jid, "query": "way;out;", "timeout": 1,
+                               "state": "queued", "startedAt": now_iso()})
+                    run_job(jid)
+                    failed = read_job(jid)
+                    assert failed["state"] == "failed", failed
+                    assert failed["error"].startswith(prefix), failed
+                    assert detail in failed["error"], failed
+                    assert "errorKind" not in failed, failed
+            finally:
+                stalled.close()
+                limiter.shutdown()
+                limiter.server_close()
+                config.OVERPASS, overpass.READ_SLACK = old_overpass, old_slack
         finally:
             config.SPOOL = old_spool
 

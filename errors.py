@@ -2,7 +2,12 @@
 
 
 class StageError(Exception):
-    """Carries user-visible error text into the job's `failed` state."""
+    """Carries user-visible error text into the job's `failed` state.
+    `transient` marks a load failure: the job fails without an errorKind."""
+
+    def __init__(self, text: str, transient: bool = False):
+        super().__init__(text)
+        self.transient = transient
 
 
 class Aborted(Exception):

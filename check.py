@@ -77,6 +77,14 @@ if not LIVE:
     OFFLINE_RELATIONS = (3, 3)      # (relations, relationsSkipped)
     OFFLINE_UNDATED = 3             # two timestamp-less relations + member node
 
+    # query marker -> (status, the tail of Overpass's own load-refusal text)
+    LOAD_PAGES = {
+        "rate_limited": (429, "rate_limited. Please check /api/status for"
+                              " the quota of your IP address."),
+        "server_busy": (504, "timeout. The server is probably too busy to"
+                             " handle your request."),
+    }
+
     class StubOverpass(http.server.BaseHTTPRequestHandler):
         """Answers like Overpass: the fixture for any query with an out clause,
         an Overpass-shaped HTML error page for anything the service rejects."""
@@ -93,6 +101,8 @@ if not LIVE:
             end = query.find(";")
             if query.startswith("[") and end != -1:
                 query = query[end + 1:]
+            load_page = next((page for marker, page in LOAD_PAGES.items()
+                              if marker in query), None)
             if "huge_area" in query:
                 # over-ceiling: Overpass answers 200 with a runtime remark
                 body = ('{\n  "elements": [\n  ],\n  "remark": "runtime error:'
@@ -108,6 +118,19 @@ if not LIVE:
                 # Overpass's HTML error page rather than [out:json] data
                 body = pmtiler.ERROR_PAGE.encode()
                 self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif load_page:
+                # load refusals, worded like the real pages: both name
+                # Dispatcher_Client, the same token as an areas refusal
+                status, reason = load_page
+                body = ('<html><p>copyright boilerplate</p><p><strong>Error'
+                        '</strong>: runtime error: open64: 0 Success'
+                        ' /osm3s_osm_base Dispatcher_Client::'
+                        'request_read_and_idx::%s</p></html>' % reason).encode()
+                self.send_response(status)
                 self.send_header("Content-Type", "text/html")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -463,6 +486,19 @@ def main():
             assert "Dispatcher_Client" in job.get("error", ""), job
             assert "response format" not in job.get("error", ""), job
             assert "converting" not in seen, seen
+
+            # 429/504 are load, not the query: fail with Overpass's text
+            # but no errorKind, so the caller retries
+            for marker, text in (("rate_limited", "rate_limited"),
+                                 ("server_busy", "too busy")):
+                load = {"id": "check-" + marker.replace("_", "-"),
+                        "query": marker + " out;", "timeout": 30}
+                assert call(base, "POST", "/jobs", load)[0] == 202
+                job, _ = poll(base, load["id"])
+                assert job["state"] == "failed", job
+                assert job.get("error", "").startswith("Error"), job
+                assert text in job["error"], job
+                assert "errorKind" not in job, job
 
         # --- one malformed job.json must not 500 the list endpoint
         os.makedirs(os.path.join(SPOOL, "malformed"), exist_ok=True)

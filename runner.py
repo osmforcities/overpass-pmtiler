@@ -63,16 +63,16 @@ def run_job(job_id: str) -> None:
     except Aborted:
         log("job", job_id, "aborted (deleted)")
     except StageError as error:
-        fail(job, str(error))
+        fail(job, str(error), transient=error.transient)
     except Exception as error:
         fail(job, "%s: %s" % (type(error).__name__, error))
 
 
-def fail(job: dict, error: str) -> None:
+def fail(job: dict, error: str, transient: bool = False) -> None:
     # keep the run's own dict: a re-read would adopt the on-disk record's
     # generation and stomp a re-POSTed job (write_job couldn't tell them apart)
     job["error"] = error
-    if job.get("state") == "fetching":
+    if not transient and job.get("state") == "fetching":
         # only Overpass's own refusals classify -- a bake-stage "out of
         # memory" from tippecanoe is host pressure, not the query ceiling
         kind = classify_error(error)

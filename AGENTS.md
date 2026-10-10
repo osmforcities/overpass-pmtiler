@@ -6,7 +6,7 @@ Turns an Overpass query into a PMTiles archive as an async job: fetch -> convert
 
 ```bash
 python3 pmtiler.py             # serve (default 127.0.0.1:8099)
-python3 pmtiler.py --selftest  # converter + spool assertions, no network
+python3 pmtiler.py --selftest  # converter, spool + fetch-failure assertions, loopback only
 python3 check.py --offline     # full HTTP contract against a stub Overpass (what CI runs)
 python3 check.py               # end-to-end against a real Overpass: one small-city job, then teardown
 ```
