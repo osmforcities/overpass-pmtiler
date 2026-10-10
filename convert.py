@@ -40,7 +40,7 @@ from errors import StageError
 # today.
 #
 # Check rows against that package's polygon-features.json, never against recall
-# -- the #12 review flagged railway's "platform" as a typo for "traverser",
+# -- a past review flagged railway's "platform" as a typo for "traverser",
 # which appears in neither 0.9.2 nor upstream master. Regenerate only when the
 # pinned compatibility target bumps, then re-run oracle_compare.py; nothing
 # else detects the two drifting apart.

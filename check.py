@@ -528,7 +528,7 @@ def main():
         assert snapshot["diskFreeBytes"] > 0, snapshot
         assert snapshot["uptimeSeconds"] >= 0, snapshot
 
-        # --- crash recovery (#9): kill mid-run, restart, jobs resume FIFO
+        # --- crash recovery: kill mid-run, restart, jobs resume FIFO
         if not LIVE:
             # seed a job that "crashed mid-bake long ago": recover() must
             # run it FIRST (FIFO by startedAt) and tippecanoe -f must

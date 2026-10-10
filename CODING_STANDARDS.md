@@ -35,3 +35,16 @@ How code in this repo should be written. Reviewers (human and agent) check chang
 ## Vocabulary
 
 - Name things with the terms in [CONTEXT.md](CONTEXT.md). Respect its _Avoid_ lists in code, tests, commits and docs.
+
+## Comments
+
+- Names first. A comment that says what a value, function or block is means the name is wrong: rename and delete the comment.
+- Comment only what code can't say: a non-obvious reason, a bug workaround, an outside constraint (Overpass behavior, tippecanoe quirk). One line by default.
+- Module docstrings are the exception: they hold the concern, invariants and known ceilings (see Layout), and can run longer.
+- No bare issue or PR refs (`#12`, `see #9`): they don't resolve where code is read. State the reason; use a full URL only if the ticket adds something the comment can't.
+
+## Commits and PRs
+
+- Conventional commits (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`). Short, factual, no emojis.
+- Issue-closing keywords (`Closes #N`) go in the PR body, never in commit messages.
+- Branch from `main`, PR into `main`.
