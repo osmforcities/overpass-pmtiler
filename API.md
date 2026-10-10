@@ -27,7 +27,8 @@ GET    /          browser viewer (also /viewer.html): submit, watch, render
 ```
 
 Every `GET` also answers `HEAD`. Errors are JSON `{ error }` with a
-human-readable message: `400` validation, `413` body too large, `404`
+human-readable message: `400` validation (including a body that is not a
+JSON object or a missing/invalid `Content-Length`), `413` body too large, `404`
 unknown route, unknown job, or an output not written yet
 (`"output.pmtiles not ready (state baking)"`). Range requests take a
 single range (a multi-range request gets the full body); an unsatisfiable
@@ -49,7 +50,7 @@ disk, `diskFreeBytes` the free space beside it.
 - `query` — Overpass QL, at most 65536 characters (a request body over
   68 KiB is refused with `413`). Must produce JSON with inline
   geometry: `[out:json]` settings and `out geom` output statements.
-- `maxsize` (bytes, ≤ 4 GiB) / `timeout` (s, ≤ 3600) — positive integers. When supplied, the
+- `maxsize` (bytes, ≤ 4 GiB) / `timeout` (s, ≤ 3600) — positive JSON integers (not floats, booleans or strings). When supplied, the
   service injects `[maxsize:]`/`[timeout:]` into the query's settings
   block, overriding any already present, and prepends `[out:json]` if the
   query has no settings block; when neither is supplied the query passes

@@ -44,6 +44,7 @@ building=* end to end ~10 min: fetch 2.23 GB in 312s at 768 MiB maxsize
 laptop over the SSH tunnel within 5% at every stage -- the pipeline is not
 sensitive to where it runs.
 """
+import http.client
 import json
 import os
 import shutil
@@ -399,10 +400,10 @@ def main():
                      "ageBandsDays": []})[0] == 400  # empty list is a mistake
         # int() would truncate 100.5 and turn true into 1
         for bad_int in (100.5, True, "100"):
-            assert call(base, "POST", "/jobs",
-                        {"id": "ok", "query": "x", "maxsize": bad_int})[0] == 400
-            assert call(base, "POST", "/jobs",
-                        {"id": "ok", "query": "x", "timeout": bad_int})[0] == 400
+            for key in ("maxsize", "timeout"):
+                status, _, body = call(base, "POST", "/jobs",
+                                       {"id": "ok", "query": "x", key: bad_int})
+                assert status == 400 and "error" in json.loads(body), body
         # a valid non-object body used to drop the connection
         for not_object in ([], "x", 1, b"null"):
             status, _, body = call(base, "POST", "/jobs", not_object)
@@ -412,6 +413,13 @@ def main():
             status, _, body = call(base, "POST", "/jobs", {"id": "ok", "query": "x"},
                                    {"Content-Length": bad_length})
             assert status == 400 and "error" in json.loads(body), body
+        # no Content-Length at all: urllib always sends one, so go raw
+        conn = http.client.HTTPConnection(base.split("//")[1], timeout=10)
+        conn.putrequest("POST", "/jobs")
+        conn.endheaders()
+        response = conn.getresponse()
+        assert response.status == 400 and "error" in json.loads(response.read())
+        conn.close()
 
         # --- overpass errors surface verbatim
         bad = {"id": "check-broken", "query": "this is not overpass ql", "timeout": 30}

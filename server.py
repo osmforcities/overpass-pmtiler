@@ -67,10 +67,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # until the client closes
         if not length.isdecimal():
             return self.send_error_json(400, "invalid Content-Length")
-        if int(length) > MAX_QUERY + 4096:
+        length = int(length)
+        if length > MAX_QUERY + 4096:
             return self.send_error_json(413, "body too large")
         try:
-            request = json.loads(self.rfile.read(int(length)) or b"{}")
+            request = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self.send_error_json(400, "invalid json")
         if not isinstance(request, dict):
