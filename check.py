@@ -14,8 +14,8 @@ Defaults to an Overpass tunnelled to https://localhost:8080 with a self-signed
 cert (hence PMTILER_INSECURE=1); set PMTILER_OVERPASS to point elsewhere.
 --offline replaces the tunnel with an in-process stub Overpass serving the
 selftest fixture, so the whole HTTP contract runs without network or an
-Overpass (tippecanoe still required); only the live-data assertions are
-dropped, replaced with fixture literals. CI (.github/workflows/check.yml)
+Overpass (tippecanoe and pgrep still required); only the live-data
+assertions are dropped, replaced with fixture literals. CI (.github/workflows/check.yml)
 runs the selftest and the offline mode on every push; live stays a manual
 pre-deploy check.
 
@@ -51,6 +51,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -65,7 +66,6 @@ POLL = 2.0 if LIVE else 0.25
 
 if not LIVE:
     import http.server
-    import threading
     import urllib.parse
 
     import pmtiler
@@ -142,6 +142,20 @@ if not LIVE:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif "dense_points" in query:
+                # 200k nodes packed into one city-sized box: tippecanoe bakes
+                # them for seconds, long enough to DELETE the job mid-bake
+                elements = ",\n".join(
+                    '{"type":"node","id":%d,"lat":%.5f,"lon":%.5f,'
+                    '"tags":{"amenity":"bench"}}'
+                    % (i + 1, 52 + i % 500 * 0.0001, 4.3 + i // 500 * 0.00025)
+                    for i in range(200000))
+                body = ('{\n  "elements": [\n%s\n  ]\n}\n' % elements).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif "out" in query:
                 # Pad past 1 MB: the service reads in 1 MiB chunks and a
                 # buffered read blocks until the chunk is full, so the first
@@ -157,7 +171,9 @@ if not LIVE:
                 self.end_headers()
                 self.wfile.write(body[:split])
                 self.wfile.flush()
-                time.sleep(0.5)  # hold fetching open for the polls
+                # hold fetching open for the polls; hold_fetch outlasts the
+                # 1s progress throttle so a DELETE lands on the next tick
+                time.sleep(3 if "hold_fetch" in query else 0.5)
                 try:
                     self.wfile.write(body[split:])
                 except ConnectionError:
@@ -239,6 +255,19 @@ def poll(base, jid):
     raise AssertionError("job %s stuck in %s after %ss" % (jid, seen[-1], DEADLINE))
 
 
+def wait_until(condition, what, timeout=DEADLINE):
+    end = time.time() + timeout
+    while not condition():
+        assert time.time() < end, "%s never happened" % what
+        time.sleep(0.05)
+
+
+def tippecanoe_running(job_dir):
+    # tippecanoe's argv carries the job dir: its input and output live there
+    return subprocess.run(["pgrep", "-f", job_dir],
+                          stdout=subprocess.DEVNULL).returncode == 0
+
+
 def main():
     stub = None
     overpass = OVERPASS
@@ -251,10 +280,20 @@ def main():
     service_env = dict(os.environ, PMTILER_SPOOL=SPOOL, PMTILER_PORT=str(port),
                        PMTILER_OVERPASS=overpass, PMTILER_INSECURE=INSECURE)
 
+    service_log = []
+
+    def tee(stream):
+        for line in stream:
+            sys.stdout.write(line)
+            service_log.append(line)
+
     def spawn_service():
         started = subprocess.Popen(
             [sys.executable, os.path.join(HERE, "pmtiler.py")],
-            env=service_env)
+            env=service_env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True)
+        threading.Thread(target=tee, args=(started.stdout,),
+                         daemon=True).start()
         for _ in range(50):
             try:
                 call(base, "GET", "/jobs/nope")
@@ -548,10 +587,8 @@ def main():
             assert call(base, "POST", "/jobs",
                         {"id": killed, "query": JOB["query"],
                          "timeout": 30})[0] == 202
-            end = time.time() + DEADLINE
-            while get_json(base, "/jobs/" + killed)[1]["state"] == "queued":
-                assert time.time() < end, "job never started"
-                time.sleep(0.05)
+            wait_until(lambda: get_json(base, "/jobs/" + killed)[1]["state"]
+                       != "queued", "job start")
             proc.kill()  # SIGKILL: no goodbye, like a crash or an OOM kill
             proc.wait()
             with open(os.path.join(SPOOL, killed, "job.json")) as f:
@@ -573,6 +610,49 @@ def main():
                     "partial archive must be overwritten on replay"
             print("recovery: %s replayed from %s, both done, FIFO held"
                   % (killed, interrupted))
+
+        # --- DELETE of a running job: the stage unwinds, the job dir stays
+        # gone, tippecanoe is not orphaned, and the serial worker moves on
+        # to the next queued job each time
+        if not LIVE:
+            fetching = {"id": "check-delete-fetching",
+                        "query": "hold_fetch out;", "timeout": 30}
+            baking = {"id": "check-delete-baking",
+                      "query": "dense_points out;", "timeout": 30}
+            after = {"id": "check-after-delete", "query": JOB["query"],
+                     "timeout": 30}
+            for queued in (fetching, baking, after):
+                assert call(base, "POST", "/jobs", queued)[0] == 202
+
+            def deleted_mid_run(job_id, running):
+                # stub jobs run in seconds: fail fast, not after DEADLINE
+                wait_until(running, job_id + " running", timeout=30)
+                assert call(base, "DELETE", "/jobs/" + job_id)[0] == 200
+                wait_until(lambda: any("job %s aborted (deleted)" % job_id
+                                       in line for line in service_log),
+                           job_id + " abort", timeout=30)
+
+            def progress_stage(job_id):
+                return get_json(base, "/jobs/" + job_id)[1].get(
+                    "progress", {}).get("stage")
+
+            deleted_mid_run(fetching["id"], lambda: progress_stage(
+                fetching["id"]) == "fetching")
+            baking_dir = os.path.join(SPOOL, baking["id"])
+            # wait for a bake tick: a DELETE before tippecanoe opens its
+            # input fails the bake ("No such file") instead of aborting it
+            deleted_mid_run(baking["id"], lambda: progress_stage(
+                baking["id"]) == "baking" and tippecanoe_running(baking_dir))
+            # checked the moment the abort is logged: an unkilled tippecanoe
+            # would still be baking here
+            assert not tippecanoe_running(baking_dir), "tippecanoe orphaned"
+
+            job, _ = poll(base, after["id"])
+            assert job["state"] == "done", job
+            for victim in (fetching, baking):
+                assert call(base, "GET", "/jobs/" + victim["id"])[0] == 404
+                assert not os.path.exists(os.path.join(SPOOL, victim["id"]))
+            print("delete mid-run: fetching and baking aborted, next job done")
 
         # --- delete = ack + cleanup
         status, _, body = call(base, "DELETE", "/jobs/" + JOB["id"])
