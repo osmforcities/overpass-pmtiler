@@ -1,7 +1,7 @@
 """Self-check for the converter and the spool machinery, plus fetch
-transport failures against loopback sockets only -- no external network, no
-tippecanoe. Run via `python3 pmtiler.py --selftest`. Plain asserts, one
-fixture, no framework."""
+transport failures against loopback sockets only and a bake failure against a
+tippecanoe shim -- no external network, never the real tippecanoe. Run via
+`python3 pmtiler.py --selftest`. Plain asserts, one fixture, no framework."""
 import json
 import os
 import http.server
@@ -511,6 +511,65 @@ def selftest():
                 limiter.shutdown()
                 limiter.server_close()
                 config.OVERPASS, overpass.READ_SLACK = old_overpass, old_slack
+
+            # a failing tippecanoe ends the job failed with its last 20 stderr
+            # lines capped at 2000 chars, progress ticks left out: a shim
+            # earlier on PATH stands in
+            shim_dir = os.path.join(scratch_dir, "bin")
+            os.makedirs(shim_dir)
+            shim_path = os.path.join(shim_dir, "tippecanoe")
+
+            class FixtureOverpass(http.server.BaseHTTPRequestHandler):
+                def do_POST(self):
+                    # an unread body makes the close a TCP reset
+                    self.rfile.read(int(self.headers["Content-Length"]))
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(FIXTURE.encode())
+
+                def log_message(self, *a):
+                    pass
+
+            data_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
+                                                          FixtureOverpass)
+            threading.Thread(target=data_server.serve_forever,
+                             daemon=True).start()
+            old_overpass, old_path = config.OVERPASS, os.environ["PATH"]
+            try:
+                config.OVERPASS = "http://127.0.0.1:%d/api/interpreter" % \
+                    data_server.server_address[1]
+                os.environ["PATH"] = shim_dir + os.pathsep + old_path
+                errors = {}
+                for jid, stderr in (
+                        ("bake", 'for i in $(seq 1 25); do '
+                                 'echo "bad input $i" >&2; done\n'),
+                        ("bake-long", 'printf "head %03000d tail\\n" 0 >&2\n')):
+                    # progress last: inside the 20-line tail, so only the
+                    # filter keeps it out of the error
+                    with open(shim_path, "w") as f:
+                        f.write('#!/bin/sh\n' + stderr
+                                + 'echo \'{"progress":12.5}\' >&2\nexit 1\n')
+                    os.chmod(shim_path, 0o755)
+                    os.makedirs(job_directory(jid))
+                    write_job({"id": jid, "query": "way;out;",
+                               "state": "queued", "startedAt": now_iso()})
+                    run_job(jid)
+                    failed = read_job(jid)
+                    assert failed["state"] == "failed", failed
+                    errors[jid] = failed["error"]
+                error = errors["bake"]
+                assert error.startswith("tippecanoe: bad input 6\n"), error
+                assert error.endswith("bad input 25"), error
+                assert "progress" not in error, error
+                # the cap keeps the end, where tippecanoe's fatal line sits
+                assert errors["bake-long"] == \
+                    "tippecanoe: " + "0" * 1995 + " tail", \
+                    errors["bake-long"][:80]
+            finally:
+                os.environ["PATH"] = old_path
+                data_server.shutdown()
+                data_server.server_close()
+                config.OVERPASS = old_overpass
         finally:
             config.SPOOL = old_spool
 
@@ -523,6 +582,14 @@ def selftest():
             raise AssertionError("garbage archive must fail validation")
         except StageError:
             pass
+        # a well-formed v3 header addressing zero tiles is an empty bake
+        with open(bad, "wb") as f:
+            f.write(b"PMTiles\x03" + bytes(119))
+        try:
+            validate_pmtiles(bad)
+            raise AssertionError("zero-tile archive must fail validation")
+        except StageError as e:
+            assert str(e) == "bake produced an archive with no tiles", e
 
         # tail_remark: a top-level remark (2-space indent) is a runtime
         # error; the OSM tag remark=* on an element is data, not an error
