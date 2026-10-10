@@ -20,7 +20,7 @@ Overpass instance:
     curl -sk --data-urlencode data@fixtures/delft-mixed.overpassql \\
         -o fixtures/delft-mixed.json https://localhost:8080/api/interpreter
 
-delft-mixed is the area-decision corpus (#12): Delft highway/barrier/
+delft-mixed is the area-decision corpus: Delft highway/barrier/
 man_made/aeroway, 14,518 ways -- where the closed non-area loops live. The
 older delft-parks/amsterdam-parks captures predate query recording and are
 all polygon-all keys, so they exercise relations but never the area ruleset.
