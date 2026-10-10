@@ -2,7 +2,8 @@
 
 Also owns the query settings merge and the two ways Overpass reports
 errors -- an HTML error page (under any status, 200 included), and a
-"remark" key in an otherwise-200 body.
+"remark" key in an otherwise-200 body. A 429 or 504 is load, not the
+query: it fails transient and never classifies.
 """
 import html
 import os
@@ -29,6 +30,12 @@ TOO_LARGE_RE = re.compile(
 # sits deeper and must not fail a successful fetch
 REMARK_RE = re.compile(r'^  "remark"\s*:\s*"((?:[^"\\]|\\.)*)"', re.M)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
+# seconds of socket timeout beyond the query's own [timeout:], so Overpass
+# reports its timeout before the socket gives up; selftest shrinks it
+READ_SLACK = 60
+# rate limit and server busy: load, not the query. Their pages name
+# Dispatcher_Client like an areas refusal, so they must skip classify_error
+LOAD_STATUSES = (429, 504)
 
 
 def classify_error(text: str) -> str | None:
@@ -99,10 +106,11 @@ def stage_fetch(job: dict, path: str) -> None:
         headers={"Content-Type": "application/x-www-form-urlencoded"})
     ssl_context = ssl._create_unverified_context() if config.INSECURE else None
     tick = progress_writer(job, "fetching")
+    read_timeout = (job.get("timeout") or 180) + READ_SLACK
     try:
         with urllib.request.urlopen(
                 request, context=ssl_context,
-                timeout=(job.get("timeout") or 180) + 60) as response, \
+                timeout=read_timeout) as response, \
                 open(path, "wb") as out:
             received = 0
             while True:
@@ -114,12 +122,12 @@ def stage_fetch(job: dict, path: str) -> None:
                 # no total: Overpass answers chunked, there is no Content-Length
                 tick(bytes=received)
     except urllib.error.HTTPError as error:
-        raise StageError(html_error(error.read().decode("utf-8", "replace")))
+        raise StageError(html_error(error.read().decode("utf-8", "replace")),
+                         transient=error.code in LOAD_STATUSES)
     except urllib.error.URLError as error:
         raise StageError("overpass unreachable: %s" % (error.reason,))
     except TimeoutError:
-        raise StageError("overpass read timed out after %ds"
-                         % ((job.get("timeout") or 180) + 60))
+        raise StageError("overpass read timed out after %ds" % read_timeout)
     error_text = head_error(path)
     if error_text:
         raise StageError(error_text)

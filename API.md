@@ -84,7 +84,8 @@ States: `queued → fetching → converting → baking → done`, or `failed`.
   (areas-dispatcher refusal or `[maxsize:]` out-of-memory),
   `errorKind: "too_large"` is also set — permanent for that query, do not
   retry. A failure without `errorKind` is unclassified and may be
-  transient.
+  transient. An Overpass `429` (rate limit) or `504` (server busy) never
+  classifies, whatever its text.
 - A query that matches nothing fails after converting with
   `error: "query matched no elements"`; its empty `stats` are kept.
 - `DELETE` aborts a running job (the stage unwinds at its next progress
