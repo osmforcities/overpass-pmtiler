@@ -381,25 +381,36 @@ def main():
         # keepMeta was requested: editor metadata rides in the ndjson
         assert b'"@user"' in nd and b'"@timestamp"' in nd, "keepMeta absent"
 
-        status, headers, archive = call(base, "GET", "/jobs/%s/output.pmtiles" % JOB["id"])
+        arc = "/jobs/%s/output.pmtiles" % JOB["id"]
+        status, headers, archive = call(base, "GET", arc)
         assert status == 200, status
         assert archive[:7] == b"PMTiles" and archive[7] == 3, archive[:8]
         assert int.from_bytes(archive[72:80], "little") > 0, "archive has no tiles"
         assert headers.get("Accept-Ranges") == "bytes"
+        job_path = "/jobs/" + JOB["id"]
+        _, _, job_body = call(base, "GET", job_path)
+        # raw socket: urllib and http.client discard a HEAD body unread
+        for path, get_body in ((job_path, job_body), (arc, archive)):
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
+                s.sendall(b"HEAD %s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                          % path.encode())
+                raw = b"".join(iter(lambda: s.recv(65536), b""))
+            head, _, body = raw.partition(b"\r\n\r\n")
+            assert head.startswith(b"HTTP/1.1 200 ") and body == b"", (path, raw[:300])
+            assert b"\r\nContent-Length: %d\r\n" % len(get_body) in head + b"\r\n", \
+                (path, head)
         print("archive: %d bytes, %d tiles" % (
             len(archive), int.from_bytes(archive[72:80], "little")))
 
         # --- range requests (every pmtiles client is nothing but these)
-        status, headers, part = call(
-            base, "GET", "/jobs/%s/output.pmtiles" % JOB["id"],
-            headers={"Range": "bytes=0-99"})
+        status, headers, part = call(base, "GET", arc,
+                                     headers={"Range": "bytes=0-99"})
         assert status == 206, status
         assert len(part) == 100 and part == archive[:100], len(part)
         assert headers["Content-Range"] == "bytes 0-99/%d" % len(archive)
 
         # the edges real clients hit: suffix, open-ended, unsatisfiable,
         # malformed (full body per RFC)
-        arc = "/jobs/%s/output.pmtiles" % JOB["id"]
         status, headers, part = call(base, "GET", arc,
                                      headers={"Range": "bytes=-100"})
         assert status == 206 and part == archive[-100:], status
@@ -465,6 +476,30 @@ def main():
         response = conn.getresponse()
         assert response.status == 400 and "error" in json.loads(response.read())
         conn.close()
+        # the oversize length is declared, not sent: the service refuses on the
+        # header, and an unread 68 KiB body can reset the socket before the reply
+        for body, headers, expected in (
+                ({"id": "ok", "query": "x"}, {"Content-Length": str(68 * 1024 + 1)},
+                 (413, "body too large")),
+                (b"{not json", None, (400, "invalid json")),
+                ({"id": "ok", "query": "x" * 65537}, None,
+                 (400, "query exceeds 65536 bytes")),
+                ({"id": "ok", "query": "x", "maxsize": 0}, None,
+                 (400, "maxsize out of range")),
+                ({"id": "ok", "query": "x", "maxsize": 4 * 1024 ** 3 + 1}, None,
+                 (400, "maxsize out of range"))):
+            status, _, reply = call(base, "POST", "/jobs", body, headers)
+            assert (status, json.loads(reply).get("error")) == expected, \
+                (str(body)[:100], status, reply)
+
+        # --- unknown routes, outputs and jobs
+        for method, path, expected in (
+                ("POST", "/status", "not found"),
+                ("GET", "/jobs/%s/nope.txt" % JOB["id"], "not found"),
+                ("DELETE", "/jobs/no-such-job", "no such job")):
+            status, _, reply = call(base, method, path)
+            assert (status, json.loads(reply).get("error")) == (404, expected), \
+                (method, path, status, reply)
 
         # --- overpass errors surface verbatim
         bad = {"id": "check-broken", "query": "this is not overpass ql", "timeout": 30}
@@ -473,6 +508,9 @@ def main():
         assert job["state"] == "failed", job
         assert job.get("error", "").startswith("Error"), job  # not the boilerplate
         assert "parse error" in job["error"], job
+        status, _, body = call(base, "GET", "/jobs/check-broken/output.pmtiles")
+        assert status == 404 and json.loads(body) == {
+            "error": "output.pmtiles not ready (state failed)"}, body
         print("failure path:", job["error"][:120])
 
         # --- zero-feature query fails with the real cause, not a bake error
