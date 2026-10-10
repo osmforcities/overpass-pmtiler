@@ -62,13 +62,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path.split("?")[0].rstrip("/") != "/jobs":
             return self.send_error_json(404, "not found")
-        length = int(self.headers.get("Content-Length") or 0)
+        length = self.headers.get("Content-Length") or "0"
+        # isdecimal, not int(): int() takes "-1", and rfile.read(-1) blocks
+        # until the client closes
+        if not length.isdecimal():
+            return self.send_error_json(400, "invalid Content-Length")
+        length = int(length)
         if length > MAX_QUERY + 4096:
             return self.send_error_json(413, "body too large")
         try:
             request = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self.send_error_json(400, "invalid json")
+        if not isinstance(request, dict):
+            return self.send_error_json(400, "body must be a JSON object")
 
         job_id = request.get("id")
         query = request.get("query")
@@ -80,12 +87,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if len(query) > MAX_QUERY:
             return self.send_error_json(400,
                                         "query exceeds %d bytes" % MAX_QUERY)
-        try:
-            maxsize = (int(request["maxsize"])
-                       if request.get("maxsize") is not None else None)
-            timeout = (int(request["timeout"])
-                       if request.get("timeout") is not None else None)
-        except (TypeError, ValueError):
+        maxsize = request.get("maxsize")
+        timeout = request.get("timeout")
+        if any(value is not None
+               and (not isinstance(value, int) or isinstance(value, bool))
+               for value in (maxsize, timeout)):
             return self.send_error_json(400,
                                         "maxsize and timeout must be integers")
         if maxsize is not None and not 0 < maxsize <= MAX_MAXSIZE:

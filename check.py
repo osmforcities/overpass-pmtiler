@@ -44,6 +44,7 @@ building=* end to end ~10 min: fetch 2.23 GB in 312s at 768 MiB maxsize
 laptop over the SSH tunnel within 5% at every stage -- the pipeline is not
 sensitive to where it runs.
 """
+import http.client
 import json
 import os
 import shutil
@@ -181,7 +182,8 @@ def free_port():
 def call(base, method, path, body=None, headers=None):
     req = urllib.request.Request(
         base + path, method=method,
-        data=json.dumps(body).encode() if body is not None else None,
+        data=(body if body is None or isinstance(body, bytes)
+              else json.dumps(body).encode()),
         headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -396,6 +398,28 @@ def main():
         assert call(base, "POST", "/jobs",
                     {"id": "ok", "query": "x",
                      "ageBandsDays": []})[0] == 400  # empty list is a mistake
+        # int() would truncate 100.5 and turn true into 1
+        for bad_int in (100.5, True, "100"):
+            for key in ("maxsize", "timeout"):
+                status, _, body = call(base, "POST", "/jobs",
+                                       {"id": "ok", "query": "x", key: bad_int})
+                assert status == 400 and "error" in json.loads(body), body
+        # a valid non-object body used to drop the connection
+        for not_object in ([], "x", 1, b"null"):
+            status, _, body = call(base, "POST", "/jobs", not_object)
+            assert status == 400 and "error" in json.loads(body), body
+        # a negative length used to block on rfile.read(-1)
+        for bad_length in ("abc", "-1"):
+            status, _, body = call(base, "POST", "/jobs", {"id": "ok", "query": "x"},
+                                   {"Content-Length": bad_length})
+            assert status == 400 and "error" in json.loads(body), body
+        # no Content-Length at all: urllib always sends one, so go raw
+        conn = http.client.HTTPConnection(base.split("//")[1], timeout=10)
+        conn.putrequest("POST", "/jobs")
+        conn.endheaders()
+        response = conn.getresponse()
+        assert response.status == 400 and "error" in json.loads(response.read())
+        conn.close()
 
         # --- overpass errors surface verbatim
         bad = {"id": "check-broken", "query": "this is not overpass ql", "timeout": 30}
