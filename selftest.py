@@ -379,6 +379,33 @@ def selftest():
         assert braced_stats["features"] == 2 \
             and braced_stats["skipped"] == 0, braced_stats
 
+        # malformed or unexpected elements are counted and skipped, never
+        # crash the conversion, and the valid elements around them survive
+        hostile = os.path.join(scratch_dir, "hostile.json")
+        with open(hostile, "w", encoding="utf-8") as f:
+            f.write('{\n  "elements": [\n' + ",\n".join((
+                '{"type":"node","id":1,"lat":}',                  # bad JSON
+                '{"type":"area","id":2}',                         # unknown type
+                '{"type":"node","id":3,"lon":1.0}',               # no lat
+                '{"type":"relation","id":4,"members":['           # bad member
+                '{"type":"way","role":"outer","geometry":[{"lat":0}]}],'
+                '"tags":{"type":"multipolygon"}}',
+                '{"type":"relation","id":5,"members":['
+                '{"type":"way","ref":50,"role":"inner"},'  # no geometry
+                '{"type":"way","ref":51,"role":"outer","geometry":%s}],'
+                '"tags":{"type":"multipolygon"}}' % ring,
+                '{"type":"node","id":6,"lat":2.0,"lon":2.0}',
+            )) + "\n  ]\n}\n")
+        hostile_output = os.path.join(scratch_dir, "hostile.ndjson")
+        hostile_stats = convert(hostile, hostile_output)
+        assert hostile_stats["skipped"] == 3, hostile_stats
+        assert hostile_stats["relationsSkipped"] == 1, hostile_stats
+        with open(hostile_output, encoding="utf-8") as f:
+            survivors = [json.loads(line) for line in f]
+        assert [(s["properties"]["@id"], s["geometry"]["type"])
+                for s in survivors] == [("relation/5", "Polygon"),
+                                        ("node/6", "Point")], survivors
+
         # non-pretty-printed input fails loudly at the convert stage
         compact = os.path.join(scratch_dir, "compact.json")
         with open(compact, "w", encoding="utf-8") as f:
