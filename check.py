@@ -181,7 +181,8 @@ def free_port():
 def call(base, method, path, body=None, headers=None):
     req = urllib.request.Request(
         base + path, method=method,
-        data=json.dumps(body).encode() if body is not None else None,
+        data=(body if body is None or isinstance(body, bytes)
+              else json.dumps(body).encode()),
         headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -396,6 +397,21 @@ def main():
         assert call(base, "POST", "/jobs",
                     {"id": "ok", "query": "x",
                      "ageBandsDays": []})[0] == 400  # empty list is a mistake
+        # int() would truncate 100.5 and turn true into 1
+        for bad_int in (100.5, True, "100"):
+            assert call(base, "POST", "/jobs",
+                        {"id": "ok", "query": "x", "maxsize": bad_int})[0] == 400
+            assert call(base, "POST", "/jobs",
+                        {"id": "ok", "query": "x", "timeout": bad_int})[0] == 400
+        # a valid non-object body used to drop the connection
+        for not_object in ([], "x", 1, b"null"):
+            status, _, body = call(base, "POST", "/jobs", not_object)
+            assert status == 400 and "error" in json.loads(body), body
+        # a negative length used to block on rfile.read(-1)
+        for bad_length in ("abc", "-1"):
+            status, _, body = call(base, "POST", "/jobs", {"id": "ok", "query": "x"},
+                                   {"Content-Length": bad_length})
+            assert status == 400 and "error" in json.loads(body), body
 
         # --- overpass errors surface verbatim
         bad = {"id": "check-broken", "query": "this is not overpass ql", "timeout": 30}
