@@ -88,6 +88,10 @@ States: `queued → fetching → converting → baking → done`, or `failed`.
   classifies, whatever its text.
 - A query that matches nothing fails after converting with
   `error: "query matched no elements"`; its empty `stats` are kept.
+- The archive's max zoom is guessed from feature density. Input whose
+  features all sit on one location (a single node, or nodes stacked on one
+  spot) has no density to guess from and bakes at a fixed max zoom 14;
+  `baking` progress restarts from 0 for that second pass.
 - `DELETE` aborts a running job (the stage unwinds at its next progress
   write; a mid-bake abort kills tippecanoe) and immediately re-POSTing the
   same id is safe.
