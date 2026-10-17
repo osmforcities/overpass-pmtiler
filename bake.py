@@ -20,11 +20,28 @@ def validate_pmtiles(path: str) -> None:
 
 
 PROGRESS_RE = re.compile(r'^\{"progress":\s*([\d.]+)\}$')
+# -zg needs two distinct feature locations: a lone point (or points stacked on
+# one spot) cannot guess, so that input rebakes at the zoom a dense small area
+# would get. tippecanoe decides, not a count: one polygon guesses fine.
+NO_GUESS = "Can't guess maxzoom (-zg)"
+FIXED_MAXZOOM = "-z14"
 
 
 def stage_bake(job: dict, job_dir: str) -> None:
+    try:
+        run_tippecanoe(job, job_dir, "-zg")
+    except StageError as error:
+        if NO_GUESS not in str(error):
+            raise
+        run_tippecanoe(job, job_dir, FIXED_MAXZOOM)
     archive_path = os.path.join(job_dir, "output.pmtiles")
-    command = ["nice", "-n", config.NICE, "tippecanoe", "-f", "-zg",
+    validate_pmtiles(archive_path)
+    log("baked", job["id"], os.path.getsize(archive_path), "bytes")
+
+
+def run_tippecanoe(job: dict, job_dir: str, maxzoom: str) -> None:
+    archive_path = os.path.join(job_dir, "output.pmtiles")
+    command = ["nice", "-n", config.NICE, "tippecanoe", "-f", maxzoom,
                "--drop-densest-as-needed", "-P", "-l", "features",
                # --json-progress replaces the \r-redrawn bar with one line per
                # tick, and leaves real errors on stderr untouched
@@ -58,5 +75,3 @@ def stage_bake(job: dict, job_dir: str) -> None:
         if process.poll() is None:  # abort mid-bake: don't orphan the subprocess
             process.kill()
             process.wait()
-    validate_pmtiles(archive_path)
-    log("baked", job["id"], os.path.getsize(archive_path), "bytes")

@@ -592,6 +592,31 @@ def selftest():
                 assert errors["bake-long"] == \
                     "tippecanoe: " + "0" * 1995 + " tail", \
                     errors["bake-long"][:80]
+
+                # one feature location: -zg refuses, the rebake at a fixed
+                # maxzoom lands the job done; other arguments stay identical
+                header_path = os.path.join(scratch_dir, "one-tile.pmtiles")
+                with open(header_path, "wb") as f:
+                    f.write(b"PMTiles\x03" + bytes(64) + b"\x01" + bytes(54))
+                calls_path = os.path.join(scratch_dir, "calls")
+                with open(shim_path, "w") as f:
+                    f.write('#!/bin/sh\necho "$*" >> %s\n'
+                            'case " $* " in *" -zg "*)\n'
+                            '  echo "Can\'t guess maxzoom (-zg) without at least'
+                            ' two distinct feature locations" >&2; exit 110;;\n'
+                            'esac\n'
+                            'while [ "$1" != "-o" ]; do shift; done\n'
+                            'cp %s "$2"\n' % (calls_path, header_path))
+                os.makedirs(job_directory("one-location"))
+                write_job({"id": "one-location", "query": "way;out;",
+                           "state": "queued", "startedAt": now_iso()})
+                run_job("one-location")
+                done = read_job("one-location")
+                assert done["state"] == "done", done
+                with open(calls_path) as f:
+                    calls = f.read().splitlines()
+                assert len(calls) == 2, calls
+                assert calls[1] == calls[0].replace(" -zg ", " -z14 "), calls
             finally:
                 os.environ["PATH"] = old_path
                 data_server.shutdown()
