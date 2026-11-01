@@ -3,7 +3,7 @@
 # Ported from the osmforcities app repo's claude-pr-review workflow so this
 # repo stays self-contained. Posts ONE sticky comment per PR (updated in place
 # on each push) with correctness/security findings, a CODING_STANDARDS.md
-# pass, and a ponytail over-engineering pass. This repo has no other
+# pass, and a ponytail over-engineering pass. This private repo has no other
 # automated reviewer, so Claude is the sole review here.
 #
 # Requires the CLAUDE_CODE_OAUTH_TOKEN repo secret (create with
@@ -45,11 +45,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
-          # Keep the token in .git/config: the action shells out to
-          # `git fetch origin` to load the PR diff, and a private repo needs
-          # credentials for that ("could not read Username for github.com").
-          # A public repo fetches anonymously and could use
-          # persist-credentials: false, as the app repo does.
+          # Keep the token in .git/config: this is a PRIVATE repo and the
+          # action shells out to `git fetch origin` to load the PR diff, which
+          # then needs credentials. (The app repo uses persist-credentials:
+          # false, but it's public, so its anonymous fetch works; a private
+          # repo fails with "could not read Username for github.com".)
           persist-credentials: true
 
       # Fetch the ponytail plugin pinned to an exact commit (v4.8.4) so the
