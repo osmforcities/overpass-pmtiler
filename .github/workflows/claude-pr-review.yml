@@ -25,7 +25,11 @@ jobs:
     # Skip PRs authored by bots (dependabot etc.). allowed_bots below is
     # different: it lets the github-actions bot *trigger* reviews of PRs
     # authored by humans or Claude.
-    if: github.event.pull_request.user.type != 'Bot'
+    # Also skip fork PRs: GitHub withholds CLAUDE_CODE_OAUTH_TOKEN from them,
+    # so the review would fail red instead of being skipped.
+    if: >-
+      github.event.pull_request.user.type != 'Bot' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
