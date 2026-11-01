@@ -35,9 +35,9 @@ Overpass.
   invoked with a fixed argv list (never `shell=True`), and the only
   data-derived bytes it sees are JSON *string values* inside well-formed
   ndjson the converter itself serialized. Remaining exposure is a parser
-  bug in tippecanoe itself (mature, widely-fuzzed C); the example systemd
-  unit's `ProtectSystem=strict` + `ReadWritePaths=` spool sandbox bounds
-  what such a bug could touch.
+  bug in tippecanoe itself (mature, widely-fuzzed C); running the service
+  sandboxed with write access to its spool only bounds what such a bug
+  could touch.
 - **Path traversal** — job ids are charset-validated with `.`/`..` rejected
   (#31); output names go through the `OUTPUTS` allowlist; no data-derived
   string is ever used as a filesystem path.
@@ -84,8 +84,8 @@ Overpass.
   is safe; MapLibre `Popup.setHTML` with tag content is not — use
   `setText` or build DOM. Same for `stats.json` values (`filterDimensions`
   carries tag values, `tagCounts` carries tag keys).
-- **The HTTP surface has no auth by design.** The reverse-proxy allowlist
-  (`examples/nginx-pmtiler.conf`) IS the access control: anyone who can
+- **The HTTP surface has no auth by design.** Whatever limits who can
+  reach the port is the access control: anyone who can
   reach the port can submit arbitrary Overpass queries, occupy the serial
   queue, and fill the spool. Keep the bind on localhost and the allowlist
   tight.

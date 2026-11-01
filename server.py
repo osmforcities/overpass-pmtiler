@@ -1,7 +1,6 @@
 """The HTTP surface: job create/inspect/outputs/delete, plus serve().
 
-No auth by design -- bind to localhost and front with a reverse proxy
-(see README "Private by design").
+No auth by design -- bind to localhost and only let trusted clients reach it.
 """
 import http.server
 import json

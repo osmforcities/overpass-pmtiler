@@ -34,8 +34,7 @@ unknown route, unknown job, or an output not written yet
 single range (a multi-range request gets the full body); an unsatisfiable
 one gets `416` with `Content-Range: bytes */<size>`.
 
-No auth: bind to localhost and front with a reverse proxy restricted to
-trusted clients (see `examples/nginx-pmtiler.conf`).
+No auth: bind to localhost and only let trusted clients reach it.
 
 `GET /status` is the ops snapshot the dashboard polls (and a monitoring
 probe can too): `jobStates` counts jobs per state, `queueDepth` is jobs
