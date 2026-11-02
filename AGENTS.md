@@ -1,6 +1,6 @@
 # overpass-pmtiler
 
-Turns an Overpass query into a PMTiles archive as an async job: fetch -> convert to nd-geojson -> bake with tippecanoe. Python 3 stdlib + tippecanoe on PATH, configured entirely by env var; flat modules with `pmtiler.py` as the entry point. Module map in [README.md](README.md), job contract in [API.md](API.md).
+Turns an Overpass query into a PMTiles archive as an async job: fetch -> convert to nd-geojson -> bake with tippecanoe. Python 3 stdlib + tippecanoe on PATH, configured entirely by env var; flat modules with `pmtiler.py` as the entry point. Each module's docstring states its concern. Job contract in [API.md](API.md).
 
 ## Commands
 

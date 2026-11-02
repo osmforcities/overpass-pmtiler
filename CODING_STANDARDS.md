@@ -10,7 +10,7 @@ How code in this repo should be written. Reviewers (human and agent) check chang
 
 ## Layout
 
-- Flat modules, one concern each (see the module map in `README.md`). No packages, no framework.
+- Flat modules, one concern each. No packages, no framework.
 - `pmtiler.py` is the entry point: serve, or `--selftest`.
 - Each module's docstring states its concern, invariants and known ceilings. Keep it true when the module changes.
 
@@ -26,7 +26,7 @@ How code in this repo should be written. Reviewers (human and agent) check chang
 
 ## Public repo
 
-- No host, deployment or operator specifics: hostnames, IPs, box sizing, allowlists, ansible or systemd unit names of a real deployment. Those live in infra. Generic examples in `examples/` are fine.
+- No host, deployment or operator specifics: hostnames, IPs, box sizing, allowlists, ansible or systemd unit names of a real deployment. Those stay out of this repo.
 
 ## Security
 
