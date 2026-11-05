@@ -21,6 +21,9 @@ STARTED_AT = time.time()
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
+with open(os.path.join(HERE, "VERSION")) as f:
+    RELEASE = f.read().strip()
+
 
 def spool_bytes() -> int:
     total = 0
@@ -34,7 +37,7 @@ def spool_bytes() -> int:
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "pmtiler/0.1"
+    server_version = "pmtiler/" + RELEASE
     protocol_version = "HTTP/1.1"
 
     def send_json(self, status: int, payload) -> None:

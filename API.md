@@ -37,9 +37,10 @@ one gets `416` with `Content-Range: bytes */<size>`.
 No auth: bind to localhost and only let trusted clients reach it.
 
 `GET /status` is the ops snapshot the dashboard polls (and a monitoring
-probe can too): `jobStates` counts jobs per state, `queueDepth` is jobs
-waiting for the serial worker, `spoolBytes` is the spool's current size on
-disk, `diskFreeBytes` the free space beside it.
+probe can too): `version` is `pmtiler/` plus the running release from
+the `VERSION` file (e.g. `pmtiler/0.1.1`), `jobStates` counts jobs per
+state, `queueDepth` is jobs waiting for the serial worker, `spoolBytes` is
+the spool's current size on disk, `diskFreeBytes` the free space beside it.
 
 ## Request fields
 

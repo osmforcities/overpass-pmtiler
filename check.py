@@ -47,6 +47,7 @@ sensitive to where it runs.
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -581,6 +582,10 @@ def main():
         # --- /status: the dashboard + monitoring surface
         status, snapshot = get_json(base, "/status")
         assert status == 200, status
+        with open(os.path.join(HERE, "VERSION")) as f:
+            release = f.read().strip()
+        assert re.fullmatch(r"\d+\.\d+\.\d+", release), release
+        assert snapshot["version"] == "pmtiler/" + release, snapshot
         assert snapshot["queueDepth"] == 0, snapshot
         assert snapshot["jobStates"].get("done", 0) >= 1, snapshot
         assert snapshot["jobStates"].get("failed", 0) >= 1, snapshot
