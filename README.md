@@ -12,7 +12,7 @@ Full API reference: [API.md](API.md).
 
 ## Requirements
 
-You need Python 3, [tippecanoe](https://github.com/felt/tippecanoe) on your PATH, and access to an Overpass API instance. There are no Python dependencies to install.
+You need Python 3, [tippecanoe](https://github.com/felt/tippecanoe) (with its `tile-join`) on your PATH, and access to an Overpass API instance. There are no Python dependencies to install.
 
 ## Running
 

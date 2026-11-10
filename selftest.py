@@ -1,6 +1,6 @@
 """Self-check for the converter and the spool machinery, plus fetch
-transport failures against loopback sockets only and a bake failure against a
-tippecanoe shim -- no external network, never the real tippecanoe. Run via
+transport failures against loopback sockets only and bake runs against
+tippecanoe and tile-join shims -- no external network, never the real tools. Run via
 `python3 pmtiler.py --selftest`. Plain asserts, one fixture, no framework."""
 import json
 import os
@@ -617,6 +617,96 @@ def selftest():
                     calls = f.read().splitlines()
                 assert len(calls) == 2, calls
                 assert calls[1] == calls[0].replace(" -zg ", " -z14 "), calls
+
+                # a full bake reaching z14 gets z9-z13 rebaked with only the
+                # drawn keys and z14+ without a drop rate, joined after its
+                # own z0-z8; a full bake stopping at z13 is the archive as is
+                tile_join_path = os.path.join(shim_dir, "tile-join")
+                copy_header_shim = ('#!/bin/sh\necho "$(basename $0) $*" >> %s\n'
+                                    'while [ "$1" != "-o" ]; do shift; done\n'
+                                    'cp %s "$2"\n' % (calls_path, header_path))
+                for path in (shim_path, tile_join_path):
+                    with open(path, "w") as f:
+                        f.write(copy_header_shim)
+                    os.chmod(path, 0o755)
+                def write_header(max_zoom):
+                    with open(header_path, "wb") as f:
+                        f.write(b"PMTiles\x03" + bytes(64) + b"\x01"
+                                + bytes(28) + bytes([max_zoom]) + bytes(25))
+
+                for max_zoom, jid in ((14, "reaches-z14"), (13, "stops-z13")):
+                    write_header(max_zoom)
+                    open(calls_path, "w").close()
+                    os.makedirs(job_directory(jid))
+                    write_job({"id": jid, "query": "way;out;",
+                               "filterableTags": ["building"],
+                               "state": "queued", "startedAt": now_iso()})
+                    run_job(jid)
+                    done = read_job(jid)
+                    assert done["state"] == "done", done
+                    with open(calls_path) as f:
+                        calls = f.read().splitlines()
+                    assert calls[0].startswith("tippecanoe -f -zg "), calls
+                    if max_zoom == 13:
+                        assert len(calls) == 1, calls
+                        continue
+                    slim = calls[1]
+                    assert " -Z9 -z13 -r1 " in slim, slim
+                    assert " -y building -y _ts -y @id " in slim, slim
+                    assert slim.endswith(" -o %s %s" % (
+                        os.path.join(job_directory(jid), "slim.pmtiles"),
+                        os.path.join(job_directory(jid), "data.ndjson"))), slim
+                    high = calls[2]
+                    assert " -Z14 -z14 -r1 " in high, high
+                    assert " -y " not in high, high
+                    join = "tile-join -f -q --no-tile-size-limit "
+                    assert calls[3:] == [
+                        join + "-z8 -o low.pmtiles full.pmtiles",
+                        join + "-o output.pmtiles low.pmtiles slim.pmtiles"
+                               " high.pmtiles"], calls
+                    assert sorted(f for f in os.listdir(job_directory(jid))
+                                  if f.endswith(".pmtiles")) == \
+                        ["output.pmtiles"], os.listdir(job_directory(jid))
+
+                # a failing tile-join fails the job and leaves no part files
+                write_header(14)
+                with open(tile_join_path, "w") as f:
+                    f.write('#!/bin/sh\necho "join broke" >&2\nexit 1\n')
+                os.makedirs(job_directory("join-fails"))
+                write_job({"id": "join-fails", "query": "way;out;",
+                           "state": "queued", "startedAt": now_iso()})
+                run_job("join-fails")
+                failed = read_job("join-fails")
+                assert failed["state"] == "failed", failed
+                assert failed["error"] == "tile-join: join broke", failed
+                assert not [f for f in os.listdir(job_directory("join-fails"))
+                            if f.endswith(".pmtiles")], \
+                    os.listdir(job_directory("join-fails"))
+
+                # DELETE mid tile-join: the job unwinds, tile-join is killed
+                pid_path = os.path.join(scratch_dir, "tile-join.pid")
+                with open(tile_join_path, "w") as f:
+                    f.write('#!/bin/sh\necho $$ > %s\nexec sleep 30\n'
+                            % pid_path)
+                os.makedirs(job_directory("join-abort"))
+                write_job({"id": "join-abort", "query": "way;out;",
+                           "state": "queued", "startedAt": now_iso()})
+                baking = threading.Thread(target=run_job, args=("join-abort",))
+                baking.start()
+                deadline = time.time() + 10
+                while not os.path.exists(pid_path):
+                    assert time.time() < deadline, "tile-join never started"
+                    time.sleep(0.05)
+                shutil.rmtree(job_directory("join-abort"))
+                baking.join(10)
+                assert not baking.is_alive(), "abort never reached tile-join"
+                with open(pid_path) as f:
+                    tile_join_pid = int(f.read())
+                try:
+                    os.kill(tile_join_pid, 0)
+                    raise AssertionError("tile-join orphaned")
+                except ProcessLookupError:
+                    pass
             finally:
                 os.environ["PATH"] = old_path
                 data_server.shutdown()
