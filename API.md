@@ -56,7 +56,8 @@ the spool's current size on disk, `diskFreeBytes` the free space beside it.
   query has no settings block; when neither is supplied the query passes
   through unchanged.
 - `filterableTags` — optional, up to 32 tag keys of 1 to 255 characters; selects the keys
-  reported as `filterDimensions` in the stats.
+  reported as `filterDimensions` in the stats and the tags z9-z13 tiles
+  keep (see Archive contract).
 - `keepMeta` — optional boolean. When true, `data.ndjson` features also
   carry `@user`, `@uid`, `@timestamp` (ISO string), `@version`,
   `@changeset` when the element has them. The archive is unaffected —
@@ -92,6 +93,9 @@ States: `queued → fetching → converting → baking → done`, or `failed`.
   features all sit on one location (a single node, or nodes stacked on one
   spot) has no density to guess from and bakes at a fixed max zoom 14;
   `baking` progress restarts from 0 for that second pass.
+- An archive reaching z14 gets two more passes, z9-z13 and z14+ (see
+  Archive contract): `baking` progress restarts from 0 for each, then
+  holds while the archive is assembled.
 - `DELETE` aborts a running job (the stage unwinds at its next progress
   write; a mid-bake abort kills tippecanoe) and immediately re-POSTing the
   same id is safe.
@@ -108,6 +112,13 @@ States: `queued → fetching → converting → baking → done`, or `failed`.
   rendering — anyone can author them) plus `@id` (`"way/123"`) and `_ts`,
   a numeric epoch of the element's last edit (`0` for undated relation
   member nodes) — numeric so tile-side style expressions can bucket on it.
+- Exception, archives whose max zoom is 14 or more: at z9-z13 features
+  carry only the requested `filterableTags` keys, `@id` and `_ts`, with
+  coarser geometry, so tiles keep many more features at city zooms. z0-z8
+  and z14+ carry every tag, and below the top zoom z14+ keeps every
+  feature that fits the tile size limit. A consumer that needs all of a feature's tags
+  reads them at z14+ (`@id` matches across zooms). Archives with a max
+  zoom below 14 carry every tag at every zoom.
 - Conversion is osmtogeojson-0.9.2-compatible (see `convert.py` /
   `oracle_compare.py`): tag-driven polygon detection,
   `type=multipolygon|boundary` relation assembly (other relation types are

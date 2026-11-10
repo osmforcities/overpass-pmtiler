@@ -5,7 +5,7 @@ OpenStreetMap, and this service ingests whatever they wrote. What can an
 attacker reach by putting hostile content into tags, names, or geometry —
 and what stops them?
 
-Reviewed 2026-09-06 against the module split (post #29/#30/#31).
+Reviewed 2026-11-10 against the split bake (tile-join added to the bake stage).
 
 ## Trust boundaries
 
@@ -14,7 +14,7 @@ OSM editors ──> planet ──> Overpass DB ──> [fetch] raw.json
  (attacker-               (trusted infra,      |
   editable)                runs the query)  [convert] data.ndjson + stats.json
                                                |
-                                            [bake] tippecanoe -> output.pmtiles
+                                            [bake] tippecanoe, tile-join -> output.pmtiles
                                                |
                                             [serve] HTTP (localhost + proxy
                                                |      allowlist)
@@ -34,7 +34,8 @@ Overpass.
   data anywhere. Elements are parsed with `json.loads` only; tippecanoe is
   invoked with a fixed argv list (never `shell=True`), and the only
   data-derived bytes it sees are JSON *string values* inside well-formed
-  ndjson the converter itself serialized. Remaining exposure is a parser
+  ndjson the converter itself serialized. tile-join, also a fixed argv
+  list, only reads archives tippecanoe just wrote. Remaining exposure is a parser
   bug in tippecanoe itself (mature, widely-fuzzed C); running the service
   sandboxed with write access to its spool only bounds what such a bug
   could touch.

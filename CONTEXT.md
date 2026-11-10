@@ -7,6 +7,6 @@ The service's own vocabulary, one line per term.
 - **Stage**: one step of a job: fetch, convert or bake, run in that order. _Avoid:_ step, phase.
 - **Fetch**: the stage that streams the Overpass response to `raw.json` on disk. _Avoid:_ download, query.
 - **Convert**: the stage that streams `raw.json` into `data.ndjson` (osmtogeojson-compatible nd-geojson) plus stats. _Avoid:_ parse, transform.
-- **Bake**: the stage that runs tippecanoe over `data.ndjson` to produce the archive. _Avoid:_ build, tile, render.
+- **Bake**: the stage that runs tippecanoe over `data.ndjson` (plus tile-join for a split bake) to produce the archive. _Avoid:_ build, tile, render.
 - **Archive**: the `output.pmtiles` file a finished job produces. _Avoid:_ tileset, tiles, pmtiles file.
 - **Stats**: the `stats.json` dataset summary written by convert (counts, measures, tag coverage, recency). _Avoid:_ metadata, report, summary.

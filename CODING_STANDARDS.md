@@ -5,7 +5,7 @@ How code in this repo should be written. Reviewers (human and agent) check chang
 ## Dependencies
 
 - Python 3 standard library only. No `pip install`, no `requirements.txt`.
-- `tippecanoe` on PATH is the only external tool. It is invoked with a fixed argv list, never `shell=True`.
+- `tippecanoe` on PATH, with the `tile-join` it ships, is the only external tool. Both are invoked with a fixed argv list, never `shell=True`.
 - `check.py` may also call `pgrep` (procps) to assert no tippecanoe outlives an aborted job: the stdlib cannot list processes portably.
 
 ## Layout
