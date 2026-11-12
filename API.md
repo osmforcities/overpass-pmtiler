@@ -93,9 +93,10 @@ States: `queued → fetching → converting → baking → done`, or `failed`.
   features all sit on one location (a single node, or nodes stacked on one
   spot) has no density to guess from and bakes at a fixed max zoom 14;
   `baking` progress restarts from 0 for that second pass.
-- An archive reaching z14 gets two more passes, z9-z13 and z14+ (see
-  Archive contract): `baking` progress restarts from 0 for each, then
-  holds while the archive is assembled.
+- An archive reaching z14 gets more passes, z9-z13 and z14+ (see
+  Archive contract), plus one or more per zoom that has to be thinned:
+  `baking` progress restarts from 0 for each, then holds while the
+  archive is assembled.
 - `DELETE` aborts a running job (the stage unwinds at its next progress
   write; a mid-bake abort kills tippecanoe) and immediately re-POSTing the
   same id is safe.
@@ -115,10 +116,17 @@ States: `queued → fetching → converting → baking → done`, or `failed`.
 - Exception, archives whose max zoom is 14 or more: at z9-z13 features
   carry only the requested `filterableTags` keys, `@id` and `_ts`, with
   coarser geometry, so tiles keep many more features at city zooms. z0-z8
-  and z14+ carry every tag, and below the top zoom z14+ keeps every
-  feature that fits the tile size limit. A consumer that needs all of a feature's tags
+  and z14+ carry every tag. A consumer that needs all of a feature's tags
   reads them at z14+ (`@id` matches across zooms). Archives with a max
   zoom below 14 carry every tag at every zoom.
+- From z9 up, a zoom whose largest tile is over the 500 KB tile limit is
+  thinned by one rate for the whole zoom, so density stays even across
+  tiles. No zoom keeps a bigger share of the features than the zoom above
+  it, so the feature count never drops when zooming in: a zoom under a
+  thinned one is thinned too, even when it fits. A dense dataset gets
+  zooms above 14, up to 16, until one holds every feature; a z16 still
+  over the limit is thinned. A zoom one rate cannot bring under the limit
+  falls back to per-tile dropping, which is uneven.
 - Conversion is osmtogeojson-0.9.2-compatible (see `convert.py` /
   `oracle_compare.py`): tag-driven polygon detection,
   `type=multipolygon|boundary` relation assembly (other relation types are

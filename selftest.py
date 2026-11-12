@@ -648,9 +648,14 @@ def selftest():
                 assert calls[1] == calls[0].replace(" -zg ", " -z14 "), calls
 
                 # a full bake reaching z14 gets z9-z13 rebaked with only the
-                # drawn keys and z14+ without a drop rate, joined after its
-                # own z0-z8; a full bake stopping at z13 is the archive as is
+                # drawn keys and z14+ with every tag, joined after its own
+                # z0-z8; a full bake stopping at z13 is the archive as is.
+                # The decode shim answers the tile sizes a test stages per
+                # archive name, none staged meaning every tile fits
                 tile_join_path = os.path.join(shim_dir, "tile-join")
+                decode_path = os.path.join(shim_dir, "tippecanoe-decode")
+                sizes_dir = os.path.join(scratch_dir, "sizes")
+                os.makedirs(sizes_dir)
                 copy_header_shim = ('#!/bin/sh\necho "$(basename $0) $*" >> %s\n'
                                     'while [ "$1" != "-o" ]; do shift; done\n'
                                     'cp %s "$2"\n' % (calls_path, header_path))
@@ -658,6 +663,17 @@ def selftest():
                     with open(path, "w") as f:
                         f.write(copy_header_shim)
                     os.chmod(path, 0o755)
+                with open(decode_path, "w") as f:
+                    f.write('#!/bin/sh\necho "$(basename $0) $*" >> %s\n'
+                            'cat %s/$2.json 2>/dev/null || echo "[]"\n'
+                            % (calls_path, sizes_dir))
+                os.chmod(decode_path, 0o755)
+
+                def stage_sizes(name, sizes):
+                    with open(os.path.join(sizes_dir, name + ".json"), "w") as f:
+                        json.dump([{"zoom": zoom, "bytes": size}
+                                   for zoom, size in sizes.items()], f)
+
                 def write_header(max_zoom):
                     with open(header_path, "wb") as f:
                         f.write(b"PMTiles\x03" + bytes(64) + b"\x01"
@@ -679,23 +695,105 @@ def selftest():
                     if max_zoom == 13:
                         assert len(calls) == 1, calls
                         continue
-                    slim = calls[1]
-                    assert " -Z9 -z13 -r1 " in slim, slim
+                    high = calls[1]
+                    assert " -Z14 -z14 -B15 -r1.0000 " in high, high
+                    assert " -y " not in high, high
+                    assert calls[2] == "tippecanoe-decode --stats high.pmtiles"
+                    slim = calls[3]
+                    assert " -Z9 -z13 -B14 -r1.0000 " in slim, slim
                     assert " -y building -y _ts -y @id " in slim, slim
+                    assert " --no-tile-size-limit " in slim, slim
                     assert slim.endswith(" -o %s %s" % (
                         os.path.join(job_directory(jid), "slim.pmtiles"),
                         os.path.join(job_directory(jid), "data.ndjson"))), slim
-                    high = calls[2]
-                    assert " -Z14 -z14 -r1 " in high, high
-                    assert " -y " not in high, high
                     join = "tile-join -f -q --no-tile-size-limit "
-                    assert calls[3:] == [
+                    assert calls[4:] == [
+                        "tippecanoe-decode --stats slim.pmtiles",
                         join + "-z8 -o low.pmtiles full.pmtiles",
                         join + "-o output.pmtiles low.pmtiles slim.pmtiles"
                                " high.pmtiles"], calls
                     assert sorted(f for f in os.listdir(job_directory(jid))
                                   if f.endswith(".pmtiles")) == \
                         ["output.pmtiles"], os.listdir(job_directory(jid))
+
+                def bake_dense(jid, staged):
+                    for name, sizes in staged.items():
+                        stage_sizes(name, sizes)
+                    write_header(14)
+                    open(calls_path, "w").close()
+                    os.makedirs(job_directory(jid))
+                    write_job({"id": jid, "query": "way;out;",
+                               "state": "queued", "startedAt": now_iso()})
+                    run_job(jid)
+                    done = read_job(jid)
+                    assert done["state"] == "done", done
+                    assert sorted(f for f in os.listdir(job_directory(jid))
+                                  if f.endswith(".pmtiles")) == \
+                        ["output.pmtiles"], os.listdir(job_directory(jid))
+                    shutil.rmtree(sizes_dir)
+                    os.makedirs(sizes_dir)
+                    with open(calls_path) as f:
+                        calls = f.read().splitlines()
+                    return ([call.split(" --drop-polygons")[0] for call in calls
+                             if call.startswith("tippecanoe -f -Z")],
+                            [call for call in calls
+                             if call.startswith("tile-join")])
+
+                # over-cap z14 gains z15 and is thinned by one rate; no zoom
+                # under it keeps a bigger share, so the fitting slim z13 is
+                # thinned to z14's rate and the zooms under over-cap z12 to
+                # z12's
+                bakes, joins = bake_dense("dense", {
+                    "slim.pmtiles": {11: 450_000, 12: 2_000_000, 13: 100},
+                    "slim-z12.pmtiles": {12: 400_000},
+                    "high.pmtiles": {14: 900_000},
+                    "high-z14.pmtiles": {14: 450_000}})
+                assert bakes == [
+                    "tippecanoe -f -Z14 -z14 -B15 -r1.0000",
+                    "tippecanoe -f -Z15 -z15 -B16 -r1.0000",
+                    "tippecanoe -f -Z14 -z14 -B15 -r2.2500",
+                    "tippecanoe -f -Z9 -z13 -B14 -r1.0000",
+                    "tippecanoe -f -Z13 -z13 -B14 -r2.2500",
+                    "tippecanoe -f -Z12 -z12 -B13 -r5.0000",
+                    "tippecanoe -f -Z11 -z11 -B12 -r5.0000",
+                    "tippecanoe -f -Z10 -z10 -B11 -r5.0000",
+                    "tippecanoe -f -Z9 -z9 -B10 -r5.0000"], bakes
+                assert joins == [
+                    join + "-z8 -o low.pmtiles full.pmtiles",
+                    join + "-o output.pmtiles low.pmtiles slim-z13.pmtiles"
+                           " slim-z12.pmtiles slim-z11.pmtiles slim-z10.pmtiles"
+                           " slim-z9.pmtiles high-z15.pmtiles"
+                           " high-z14.pmtiles"], joins
+
+                # the fitting zooms above the highest thinned one are cut
+                # whole from the probe, not rebaked
+                bakes, joins = bake_dense("dense-slim", {
+                    "slim.pmtiles": {11: 2_000_000, 12: 450_000},
+                    "slim-z11.pmtiles": {11: 400_000}})
+                assert bakes == [
+                    "tippecanoe -f -Z14 -z14 -B15 -r1.0000",
+                    "tippecanoe -f -Z9 -z13 -B14 -r1.0000",
+                    "tippecanoe -f -Z11 -z11 -B12 -r5.0000",
+                    "tippecanoe -f -Z10 -z10 -B11 -r5.0000",
+                    "tippecanoe -f -Z9 -z9 -B10 -r5.0000"], bakes
+                assert joins == [
+                    join + "-Z12 -o slim-whole.pmtiles slim.pmtiles",
+                    join + "-z8 -o low.pmtiles full.pmtiles",
+                    join + "-o output.pmtiles low.pmtiles slim-z11.pmtiles"
+                           " slim-z10.pmtiles slim-z9.pmtiles"
+                           " slim-whole.pmtiles high.pmtiles"], joins
+
+                # a zoom no rate brings under the cap gets the capped bake
+                bake_dense("over-anyway", {
+                    "high.pmtiles": {14: 900_000},
+                    "high-z14.pmtiles": {14: 900_000}})
+                with open(calls_path) as f:
+                    z14_bakes = [call for call in f.read().splitlines()
+                                 if call.startswith("tippecanoe -f -Z14 -z14")]
+                assert len(z14_bakes) == 6, z14_bakes
+                assert all(" --no-tile-size-limit " in call
+                           for call in z14_bakes[:-1]), z14_bakes
+                assert " --no-tile-size-limit " not in z14_bakes[-1], z14_bakes
 
                 # a failing tile-join fails the job and leaves no part files
                 write_header(14)
