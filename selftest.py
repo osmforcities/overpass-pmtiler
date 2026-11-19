@@ -728,9 +728,8 @@ def selftest():
                         stage_sizes(name, sizes)
                     write_header(14)
                     open(calls_path, "w").close()
-                    os.makedirs(job_directory(jid))
-                    write_job({"id": jid, "query": "way;out;",
-                               "state": "queued", "startedAt": now_iso()})
+                    create_job({"id": jid, "query": "way;out;",
+                                "state": "queued", "startedAt": now_iso()})
                     run_job(jid)
                     done = read_job(jid)
                     assert done["state"] == "done", done
