@@ -14,7 +14,7 @@ import config
 from config import (HERE, ID_RE, MAX_AGE_BANDS, MAX_FILTER_KEYS, MAX_MAXSIZE, MAX_QUERY,
                     MAX_TIMEOUT, OUTPUTS, log, now_iso)
 from runner import Q, recover, worker
-from spool import job_directory, list_jobs, read_job, sweep, write_job
+from spool import create_job, job_directory, list_jobs, read_job, sweep
 
 CREATE_LOCK = threading.Lock()
 STARTED_AT = time.time()
@@ -129,13 +129,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if existing:  # idempotent resubmit: report state, never re-run
                 return self.send_json(200, {"id": job_id,
                                             "state": existing["state"]})
-            os.makedirs(job_directory(job_id), exist_ok=True)
-            write_job({"id": job_id, "query": query, "maxsize": maxsize,
-                       "timeout": timeout, "filterableTags": filterable_tags,
-                       "keepMeta": bool(keep_meta),
-                       "ageBandsDays": age_bands_days,
-                       "state": "queued",
-                       "startedAt": now_iso(), "error": None, "stats": None})
+            create_job({"id": job_id, "query": query, "maxsize": maxsize,
+                        "timeout": timeout, "filterableTags": filterable_tags,
+                        "keepMeta": bool(keep_meta),
+                        "ageBandsDays": age_bands_days,
+                        "state": "queued",
+                        "startedAt": now_iso(), "error": None, "stats": None})
             Q.put(job_id)
         log("job", job_id, "queued")
         self.send_json(202, {"id": job_id, "state": "queued"})

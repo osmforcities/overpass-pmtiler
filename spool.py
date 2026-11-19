@@ -1,8 +1,16 @@
 """Job records on disk: one directory per job, one job.json per directory.
 
-No database -- the spool directory is the whole persistence layer. Writes go
-through write_job (atomic tmp + rename), which doubles as the abort
-checkpoint (see errors.Aborted).
+No database -- the spool directory is the whole persistence layer. A record
+is created once by create_job; every later write goes through write_job
+(atomic tmp + rename), which doubles as the abort checkpoint (see
+errors.Aborted). A missing or unreadable job.json means the job was deleted
+under the run, even when DELETE's rmtree lost a race with a bake's temp
+files and left the dir behind; a new startedAt means it was deleted and
+re-POSTed.
+
+Ceiling: a DELETE that lands between write_job's check and its os.replace
+still writes the record back. Closing that needs DELETE to rename the dir
+aside before rmtree.
 """
 import json
 import os
@@ -40,17 +48,23 @@ def list_jobs() -> Iterator[dict]:
     return filter(None, map(read_job, os.listdir(config.SPOOL)))
 
 
+def create_job(job: dict) -> None:
+    os.makedirs(job_directory(job["id"]), exist_ok=True)
+    _replace_record(job)  # bypasses write_job: no record yet would abort
+
+
 def write_job(job: dict) -> None:
+    current = read_job(job["id"])  # startedAt is the run's generation
+    if not current or current.get("startedAt") != job.get("startedAt"):
+        raise Aborted(job["id"])
+    _replace_record(job)
+
+
+def _replace_record(job: dict) -> None:
     # tmp + os.replace makes every read see a whole record: the reason
     # job.json needs no lock across threads. Never write it in place.
-    directory = job_directory(job["id"])
-    if not os.path.isdir(directory):
-        raise Aborted(job["id"])
-    current = read_job(job["id"])  # startedAt is the run's generation
-    if current and current.get("startedAt") != job.get("startedAt"):
-        raise Aborted(job["id"])  # dir was deleted and recreated under us
     job["updatedAt"] = now_iso()
-    path = os.path.join(directory, "job.json")
+    path = os.path.join(job_directory(job["id"]), "job.json")
     temp_path = path + ".tmp"
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(job, f)

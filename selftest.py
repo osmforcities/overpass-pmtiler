@@ -21,8 +21,8 @@ from errors import Aborted, StageError
 from overpass import (apply_settings, classify_error, head_error,
                       html_error, tail_remark)
 from runner import Q, recover, run_job
-from spool import (job_directory, list_jobs, progress_writer, read_job,
-                   sweep, write_job)
+from spool import (create_job, job_directory, list_jobs, progress_writer,
+                   read_job, sweep, write_job)
 
 
 FIXTURE = '''{
@@ -446,32 +446,39 @@ def selftest():
         except StageError as e:
             assert "overpass response format" in str(e), e
 
-        # abort seam: a stale run must strand on its next write, both when the
-        # dir is gone and when a re-POST recreated it (generation mismatch)
+        # abort seam: a stale run must strand on its next write when the dir
+        # is gone, when a re-POST recreated it (generation mismatch), and when
+        # a DELETE left the dir behind without job.json
         old_spool, config.SPOOL = config.SPOOL, os.path.join(scratch_dir, "spool")
         try:
             job = {"id": "j1", "state": "queued", "startedAt": now_iso()}
-            os.makedirs(job_directory("j1"))
-            write_job(job)
+            create_job(job)
             shutil.rmtree(job_directory("j1"))
             try:
                 write_job(job)
                 raise AssertionError("deleted dir must abort")
             except Aborted:
                 pass
-            os.makedirs(job_directory("j1"))
-            write_job({"id": "j1", "state": "queued", "startedAt": now_iso()})
+            create_job({"id": "j1", "state": "queued", "startedAt": now_iso()})
             try:
                 write_job(job)
                 raise AssertionError("recreated id must abort the stale run")
             except Aborted:
                 pass
+            orphan = {"id": "orphan", "state": "baking", "startedAt": now_iso()}
+            create_job(orphan)
+            os.remove(os.path.join(job_directory("orphan"), "job.json"))
+            try:
+                write_job(orphan)
+                raise AssertionError("record-less dir must abort")
+            except Aborted:
+                pass
+            assert read_job("orphan") is None, "aborted write recreated the record"
 
             # progress_writer: first tick always writes, the throttle
             # suppresses, and a tick on a deleted job is an abort checkpoint
             progress_job = {"id": "j2", "state": "fetching", "startedAt": now_iso()}
-            os.makedirs(job_directory("j2"))
-            write_job(progress_job)
+            create_job(progress_job)
             tick = progress_writer(progress_job, "fetching", interval=3600)
             tick(bytes=1)
             assert read_job("j2")["progress"] == {"stage": "fetching",
@@ -501,9 +508,8 @@ def selftest():
                 f.write("not json")
             for jid, state, ts in (("r2", "baking", "2001-02"),
                                    ("r1", "fetching", "2001-01")):
-                os.makedirs(job_directory(jid))
-                write_job({"id": jid, "state": state, "startedAt": ts,
-                           "progress": {"stage": state, "pct": 80}})
+                create_job({"id": jid, "state": state, "startedAt": ts,
+                            "progress": {"stage": state, "pct": 80}})
             recover()
             order = [Q.get_nowait() for _ in range(3)]
             assert order == ["r1", "r2", "j1"], order  # j1: still-queued above
@@ -553,9 +559,8 @@ def selftest():
                          "rate_limited")):
                     config.OVERPASS = \
                         "http://127.0.0.1:%d/api/interpreter" % port
-                    os.makedirs(job_directory(jid))
-                    write_job({"id": jid, "query": "way;out;", "timeout": 1,
-                               "state": "queued", "startedAt": now_iso()})
+                    create_job({"id": jid, "query": "way;out;", "timeout": 1,
+                                "state": "queued", "startedAt": now_iso()})
                     run_job(jid)
                     failed = read_job(jid)
                     assert failed["state"] == "failed", failed
@@ -606,9 +611,8 @@ def selftest():
                         f.write('#!/bin/sh\n' + stderr
                                 + 'echo \'{"progress":12.5}\' >&2\nexit 1\n')
                     os.chmod(shim_path, 0o755)
-                    os.makedirs(job_directory(jid))
-                    write_job({"id": jid, "query": "way;out;",
-                               "state": "queued", "startedAt": now_iso()})
+                    create_job({"id": jid, "query": "way;out;",
+                                "state": "queued", "startedAt": now_iso()})
                     run_job(jid)
                     failed = read_job(jid)
                     assert failed["state"] == "failed", failed
@@ -636,9 +640,8 @@ def selftest():
                             'esac\n'
                             'while [ "$1" != "-o" ]; do shift; done\n'
                             'cp %s "$2"\n' % (calls_path, header_path))
-                os.makedirs(job_directory("one-location"))
-                write_job({"id": "one-location", "query": "way;out;",
-                           "state": "queued", "startedAt": now_iso()})
+                create_job({"id": "one-location", "query": "way;out;",
+                            "state": "queued", "startedAt": now_iso()})
                 run_job("one-location")
                 done = read_job("one-location")
                 assert done["state"] == "done", done
@@ -666,10 +669,9 @@ def selftest():
                 for max_zoom, jid in ((14, "reaches-z14"), (13, "stops-z13")):
                     write_header(max_zoom)
                     open(calls_path, "w").close()
-                    os.makedirs(job_directory(jid))
-                    write_job({"id": jid, "query": "way;out;",
-                               "filterableTags": ["building"],
-                               "state": "queued", "startedAt": now_iso()})
+                    create_job({"id": jid, "query": "way;out;",
+                                "filterableTags": ["building"],
+                                "state": "queued", "startedAt": now_iso()})
                     run_job(jid)
                     done = read_job(jid)
                     assert done["state"] == "done", done
@@ -701,9 +703,8 @@ def selftest():
                 write_header(14)
                 with open(tile_join_path, "w") as f:
                     f.write('#!/bin/sh\necho "join broke" >&2\nexit 1\n')
-                os.makedirs(job_directory("join-fails"))
-                write_job({"id": "join-fails", "query": "way;out;",
-                           "state": "queued", "startedAt": now_iso()})
+                create_job({"id": "join-fails", "query": "way;out;",
+                            "state": "queued", "startedAt": now_iso()})
                 run_job("join-fails")
                 failed = read_job("join-fails")
                 assert failed["state"] == "failed", failed
@@ -717,9 +718,8 @@ def selftest():
                 with open(tile_join_path, "w") as f:
                     f.write('#!/bin/sh\necho $$ > %s\nexec sleep 30\n'
                             % pid_path)
-                os.makedirs(job_directory("join-abort"))
-                write_job({"id": "join-abort", "query": "way;out;",
-                           "state": "queued", "startedAt": now_iso()})
+                create_job({"id": "join-abort", "query": "way;out;",
+                            "state": "queued", "startedAt": now_iso()})
                 baking = threading.Thread(target=run_job, args=("join-abort",))
                 baking.start()
                 deadline = time.time() + 10
