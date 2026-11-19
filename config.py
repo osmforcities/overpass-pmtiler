@@ -17,6 +17,9 @@ BIND = os.environ.get("PMTILER_BIND", "127.0.0.1")
 INSECURE = os.environ.get("PMTILER_INSECURE") == "1"
 NICE = os.environ.get("PMTILER_NICE", "10")
 MAX_AGE_DAYS = float(os.environ.get("PMTILER_MAX_AGE_DAYS", "7"))
+with open(os.path.join(HERE, "VERSION")) as f:
+    RELEASE = f.read().strip()
+USER_AGENT = os.environ.get("PMTILER_USER_AGENT", "overpass-pmtiler/" + RELEASE)
 
 # (?!\.\.?$): "." and ".." would otherwise pass, and job_directory() joins
 # the id onto the spool path -- DELETE /jobs/.. would rmtree the spool's

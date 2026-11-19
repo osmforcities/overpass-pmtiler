@@ -103,7 +103,8 @@ def stage_fetch(job: dict, path: str) -> None:
     form_body = urllib.parse.urlencode({"data": query}).encode()
     request = urllib.request.Request(
         config.OVERPASS, data=form_body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"})
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "User-Agent": config.USER_AGENT})
     ssl_context = ssl._create_unverified_context() if config.INSECURE else None
     tick = progress_writer(job, "fetching")
     read_timeout = (job.get("timeout") or 180) + READ_SLACK

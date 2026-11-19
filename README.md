@@ -31,10 +31,11 @@ Environment variables, all optional. Read in `config.py`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PMTILER_OVERPASS` | `http://localhost/api/interpreter` | Overpass interpreter URL |
+| `PMTILER_USER_AGENT` | `overpass-pmtiler/<version>` | User-Agent sent to Overpass. Some instances reject requests without a client name |
 | `PMTILER_INSECURE` | unset | `1` skips TLS verification, for a self-signed cert (e.g. a tunnel) |
 | `PMTILER_BIND` | `127.0.0.1` | Listen address |
 | `PMTILER_PORT` | `8099` | Listen port |
-| `PMTILER_SPOOL` | `spool` | Spool directory. A large job can leave about 3 GB |
+| `PMTILER_SPOOL` | `spool` | Spool directory, relative to the working directory. A large job can leave about 3 GB |
 | `PMTILER_MAX_AGE_DAYS` | `7` | Jobs not written to for this long are swept from the spool |
 | `PMTILER_NICE` | `10` | `nice` level for tippecanoe and tile-join |
 
