@@ -1,9 +1,13 @@
 """The convert stage: stream Overpass JSON to nd-geojson plus stats.
 
-One bounded-memory pass (~13 MB RSS at 2.23 GB input). Element-boundary
+One streaming pass (~13 MB RSS at 2.23 GB input, positions aside). Element-boundary
 splitting + per-element json.loads is the only approach that survives
 metro scale: token-level streaming parsers measured ~40x slower, and
 whole-collection converters (osmtogeojson itself) are superlinear.
+The one per-feature state held: the first position of every point and
+area (16 bytes each) for geometryMix's local density and cell overlap,
+which need every position before they can be computed. Cell overlap then
+peaks at about 200 MB for 2M features.
 
 Compatibility targets -- the outputs are defined against two ecosystem
 standards, not against any consumer:
@@ -25,6 +29,7 @@ import math
 import os
 import resource
 import time
+from array import array
 from collections.abc import Callable, Iterable
 
 from config import BANDS, DAY, EARTH_R
@@ -242,6 +247,68 @@ def polygons_area_m2(polygons: list) -> float:
     return total
 
 
+DENSITY_CELL_DEG = 0.005  # about 500 m
+LAT_M_PER_DEG = 110_570
+LON_M_PER_DEG_AT_EQUATOR = 111_320
+# From wider than an icon marker at city zoom down to about one at street zoom
+OVERLAP_CELL_SIZES_M = [1024, 512, 256, 128, 64, 32, 16]
+
+
+def split_positions(positions) -> tuple:
+    """Flat [lon, lat, lon, lat, ...] -> (longitudes, latitudes,
+    lon_m_per_deg), the last at the positions' mean latitude."""
+    longitudes, latitudes = positions[0::2], positions[1::2]
+    lon_m_per_deg = LON_M_PER_DEG_AT_EQUATOR * math.cos(
+        math.radians(sum(latitudes) / len(latitudes)))
+    return longitudes, latitudes, lon_m_per_deg
+
+
+def local_density_per_km2(positions) -> float:
+    """Features per km2 around a typical feature: how many share its ~500 m
+    cell, averaged over the features, not the cells, so a town inside a huge
+    bbox or a few far outliers do not thin it out."""
+    if not positions:
+        return 0.0
+    longitudes, latitudes, lon_m_per_deg = split_positions(positions)
+    cell_counts = {}
+    for lon, lat in zip(longitudes, latitudes):
+        cell = (math.floor(lon / DENSITY_CELL_DEG), math.floor(lat / DENSITY_CELL_DEG))
+        cell_counts[cell] = cell_counts.get(cell, 0) + 1
+    cell_km2 = (DENSITY_CELL_DEG * LAT_M_PER_DEG / 1000
+                * DENSITY_CELL_DEG * lon_m_per_deg / 1000)
+    cell_counts_squared = sum(count * count for count in cell_counts.values())
+    return cell_counts_squared / len(latitudes) / cell_km2
+
+
+def cell_overlap(positions) -> list:
+    """[[cellSizeM, share], ...]: per cell size, the share of features in a
+    cell another feature already holds.
+
+    Each size doubles the next, and halving a float is exact, so the cell at
+    2s is the cell at s floor-divided by 2: one pass at the finest size, then
+    shrinking sets."""
+    if not positions:
+        return []
+    longitudes, latitudes, lon_m_per_deg = split_positions(positions)
+    count = len(latitudes)
+    finest = OVERLAP_CELL_SIZES_M[-1]
+    # ponytail: about 200 MB transient at 2M features (São Paulo buildings),
+    # 40% less than (x, y) tuples. 16 m cells span about +-1.25M across the
+    # globe: a 2^23 offset makes both halves non-negative, 25 bits hold them.
+    offset, bits = 1 << 23, 25
+    cells = {(math.floor(lon * lon_m_per_deg / finest) + offset) << bits
+             | (math.floor(lat * LAT_M_PER_DEG / finest) + offset)
+             for lon, lat in zip(longitudes, latitudes)}
+    low_mask = (1 << bits) - 1
+    shares = []
+    for size in reversed(OVERLAP_CELL_SIZES_M):
+        if size != finest:
+            cells = {(cell >> bits >> 1) << bits | (cell & low_mask) >> 1
+                     for cell in cells}
+        shares.append([size, round(1 - len(cells) / count, 4)])
+    return shares[::-1]
+
+
 def tag_dimension(key: str, counts: dict, casing: dict, missing: int) -> dict:
     """FilterDimension for one key: values sorted desc by count (ties keep
     first-seen order), displayed with the dominant original casing (ties
@@ -310,6 +377,7 @@ def convert(input_path: str, output_path: str,
     age_band_seconds = [days * DAY for days in age_bands_days]
     age_bands = [0] * (len(age_band_seconds) + 1) if age_band_seconds else None
     mix = {"points": 0, "lines": 0, "areas": 0, "lineKm": 0.0, "areaKm2": 0.0}
+    point_positions, area_positions = array("d"), array("d")
 
     # read binary: len(line) is then exact bytes, and json.loads takes bytes, so
     # progress costs nothing (f.tell() is disabled while iterating a text file)
@@ -391,11 +459,13 @@ def convert(input_path: str, output_path: str,
             geometry_type = geometry["type"]
             if geometry_type == "Point":
                 mix["points"] += 1
+                point_positions.extend(coordinates[0])
             elif geometry_type == "LineString":
                 mix["lines"] += 1
                 mix["lineKm"] += line_length_m(coordinates) / 1000.0
             else:
                 mix["areas"] += 1
+                area_positions.extend(coordinates[0])
                 mix["areaKm2"] += polygons_area_m2(
                     geometry["coordinates"] if geometry_type == "MultiPolygon"
                     else [geometry["coordinates"]]) / 1e6
@@ -484,6 +554,7 @@ def convert(input_path: str, output_path: str,
             for ref, lon, lat in member_nodes:  # bare Points, osmtogeojson parity
                 counts["nodes"] += 1
                 mix["points"] += 1
+                point_positions.extend((lon, lat))
                 if age_bands is not None:  # undated by construction
                     age_bands[-1] += 1
                 for key in filter_keys:  # tagless, so missing for every dimension
@@ -498,6 +569,9 @@ def convert(input_path: str, output_path: str,
                      bytes=read, total=total, pct=round(100.0 * read / total, 1))
 
     features = counts["nodes"] + counts["ways"] + counts["relations"]
+    mix["pointsPerKm2"] = round(local_density_per_km2(point_positions), 2)
+    mix["areasPerKm2"] = round(local_density_per_km2(area_positions), 2)
+    mix["cellOverlap"] = cell_overlap(point_positions + area_positions)
     mapper_bands = [0, 0, 0, 0]
     for timestamp in mapper_latest.values():
         mapper_bands[sum((now - timestamp) > band for band in BANDS)] += 1

@@ -3,6 +3,7 @@ transport failures against loopback sockets only and bake runs against
 tippecanoe and tile-join shims -- no external network, never the real tools. Run via
 `python3 pmtiler.py --selftest`. Plain asserts, one fixture, no framework."""
 import json
+import math
 import os
 import http.server
 import shutil
@@ -14,7 +15,8 @@ import config
 import overpass
 from bake import PROGRESS_RE, validate_pmtiles
 from config import DAY, now_iso
-from convert import brace_delta, convert, is_area
+from convert import (OVERLAP_CELL_SIZES_M, brace_delta, cell_overlap, convert,
+                     is_area, local_density_per_km2)
 from errors import Aborted, StageError
 from overpass import (apply_settings, classify_error, head_error,
                       html_error, tail_remark)
@@ -272,6 +274,33 @@ def selftest():
         assert (mix["points"], mix["lines"], mix["areas"]) == (2, 1, 4), mix
         assert abs(mix["lineKm"] - 157.17776891752186) < 1e-6, mix
         assert abs(mix["areaKm2"] - 22365.44322391079) < 1e-3, mix
+        # the node and the member node: one per cell, so 1 / cell area
+        assert abs(mix["pointsPerKm2"] - 1 / (0.005 * 110.57 * 0.005 * 111.32
+                   * math.cos(math.radians((-1.0 + 10.5) / 2)))) < 0.005, mix
+        assert mix["areasPerKm2"] > 0, mix
+        assert [size for size, _ in mix["cellOverlap"]] == OVERLAP_CELL_SIZES_M, mix
+
+        # local density: a town of 100 points in one ~500 m cell plus three
+        # far outliers reads as dense, where a count over the bbox would not
+        town = [coordinate for i in range(100)
+                for coordinate in (4.9001 + i * 0.00003, 52.3701)]
+        outliers = [5.9, 53.3, 3.9, 51.3, 6.5, 52.0]
+        cell_km2 = 0.005 * 110.57 * 0.005 * 111.32 * math.cos(
+            math.radians((52.3701 * 100 + 53.3 + 51.3 + 52.0) / 103))
+        assert abs(local_density_per_km2(town + outliers)
+                   - (100 * 100 + 3) / 103 / cell_km2) < 1e-6
+        assert local_density_per_km2(town + outliers) > 75
+        assert local_density_per_km2([]) == 0
+        # cell overlap: two features metres apart share every cell, a far
+        # one never does, so a third of the features overlap at every size
+        overlap = cell_overlap([0.00001, 0.00001, 0.00002, 0.00002, 1.0, 1.0])
+        assert [size for size, _ in overlap] == OVERLAP_CELL_SIZES_M, overlap
+        assert all(abs(share - 1 / 3) < 1e-4 for _, share in overlap), overlap
+        # about 100 m apart: one cell from 128 m up, two below
+        assert cell_overlap([0.00001, 0.00001, 0.0009, 0.00001]) == [
+            [1024, 0.5], [512, 0.5], [256, 0.5], [128, 0.5],
+            [64, 0.0], [32, 0.0], [16, 0.0]]
+        assert cell_overlap([]) == []
         # tag-first area decision (osmtogeojson parity), every ruleset branch
         assert is_area({"building": "yes"})            # polygon: all
         assert not is_area({"highway": "cycleway"})    # not in the highway whitelist

@@ -151,9 +151,29 @@ don't understand.
 | `mapperRecencyBands` | editors bucketed by their latest edit (4 entries) |
 | `tagCounts` | `[{key, count}]`, descending |
 | `filterDimensions` | per requested key: `{key, kind:"tag", values:[{value, count}], missing}` — values case-folded with dominant original casing, `;`-split, zero-value keys kept |
-| `geometryMix` | `{points, lines, areas, lineKm, areaKm2}` — lengths/areas are `@turf`-compatible spherical geodesy |
+| `geometryMix` | `{points, lines, areas, lineKm, areaKm2, pointsPerKm2, areasPerKm2, cellOverlap}` — lengths/areas are `@turf`-compatible spherical geodesy; the last three are defined below |
 | `bbox` | `[w, s, e, n]`, `null` when empty |
 | `seconds`, `peakRssMB` | informational: convert-stage wall time; peak RSS of the service process so far, not of this job |
+
+Local density and cell overlap take one position per point and per area:
+a point's coordinates, an area's first outer-ring vertex. Lines are not
+counted.
+
+- `pointsPerKm2`, `areasPerKm2`: local density of that kind. Positions
+  are grouped in cells of 0.005° × 0.005° (about 500 m). For each
+  feature, count the features in its cell, average that over the
+  features (not the cells), and divide by the cell's area in km² at the
+  kind's mean latitude. A town inside a large bbox, or a few far
+  outliers, does not thin it out. Rounded to 2 decimals, `0` when the
+  kind is absent.
+- `cellOverlap`: `[[cellSizeM, share], ...]` for cell sizes 1024, 512,
+  256, 128, 64, 32 and 16 m, points and areas together. Share = `1 -
+  occupiedCells / features`: the share of features in a cell another
+  feature already holds, rounded to 4 decimals. Metres map to degrees with 110570 m per degree
+  of latitude and 111320 × cos(mean latitude) per degree of longitude.
+  `[]` when there are no points or areas.
+
+Stats converted before these fields existed lack them.
 
 No `age` dimension is emitted: tiles carry raw `_ts` and the stats carry
 the bands, so age bucketing stays a consumer concern.
