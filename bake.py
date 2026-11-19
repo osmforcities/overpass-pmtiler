@@ -110,7 +110,7 @@ def even_density_parts(job: dict, job_dir: str, prefix: str, min_zoom: int,
                         *([] if capped else UNCAPPED)])
         return largest_tile_bytes_by_zoom(job, job_dir, name)
 
-    def bake_thinned(zoom, share, capped=False):
+    def bake_alone(zoom, share=1.0, capped=False):
         # a zoom baked alone is its own max zoom, where simplification
         # collapses small polygons the probe kept at that zoom
         return bake(zoom_part(zoom), zoom, zoom, share, capped,
@@ -125,13 +125,13 @@ def even_density_parts(job: dict, job_dir: str, prefix: str, min_zoom: int,
         for _ in range(THIN_ATTEMPTS):
             share = (min(ceiling, share * THIN_AIM_OF_CAP * TILE_CAP_BYTES / size)
                      if size else ceiling)
-            size = bake_thinned(zoom, share)
+            size = bake_alone(zoom, share)
             if size <= TILE_CAP_BYTES and (
                     share == ceiling
                     or size >= THIN_ACCEPT_FLOOR_OF_CAP * TILE_CAP_BYTES):
                 return share
         if size > TILE_CAP_BYTES:
-            bake_thinned(zoom, share, capped=True)
+            bake_alone(zoom, share, capped=True)
         return share
 
     probe = prefix + ".pmtiles"
@@ -140,7 +140,7 @@ def even_density_parts(job: dict, job_dir: str, prefix: str, min_zoom: int,
     while (extend and sizes.get(top_zoom, 0) > TILE_CAP_BYTES
            and top_zoom < MAX_TOP_ZOOM):
         top_zoom += 1
-        sizes.update(bake(zoom_part(top_zoom), top_zoom, top_zoom))
+        sizes[top_zoom] = bake_alone(top_zoom)
 
     parts = []
     lowest_whole_zoom = max_zoom + 1

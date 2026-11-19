@@ -5,6 +5,7 @@ tippecanoe and tile-join shims -- no external network, never the real tools. Run
 import json
 import math
 import os
+import re
 import http.server
 import shutil
 import socket
@@ -734,6 +735,12 @@ def selftest():
                     os.makedirs(sizes_dir)
                     with open(calls_path) as f:
                         calls = f.read().splitlines()
+                    # a per-zoom part is its own bake's max zoom, where
+                    # simplification drops small polygons
+                    for call in calls:
+                        if (call.startswith("tippecanoe ")
+                                and re.search(r"-z\d+\.pmtiles ", call)):
+                            assert " --no-simplification " in call, call
                     return ([call.split(" --drop-polygons")[0] for call in calls
                              if call.startswith("tippecanoe -f -Z")],
                             [call for call in calls
