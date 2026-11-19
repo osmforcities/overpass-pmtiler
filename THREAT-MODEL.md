@@ -5,7 +5,7 @@ OpenStreetMap, and this service ingests whatever they wrote. What can an
 attacker reach by putting hostile content into tags, names, or geometry —
 and what stops them?
 
-Reviewed 2026-11-10 against the split bake (tile-join added to the bake stage).
+Reviewed 2026-11-12 against the even-density bake (tippecanoe-decode added to the bake stage, probe passes without the tile size limit).
 
 ## Trust boundaries
 
@@ -14,7 +14,7 @@ OSM editors ──> planet ──> Overpass DB ──> [fetch] raw.json
  (attacker-               (trusted infra,      |
   editable)                runs the query)  [convert] data.ndjson + stats.json
                                                |
-                                            [bake] tippecanoe, tile-join -> output.pmtiles
+                                            [bake] tippecanoe, tippecanoe-decode, tile-join -> output.pmtiles
                                                |
                                             [serve] HTTP (localhost + proxy
                                                |      allowlist)
@@ -35,7 +35,9 @@ Overpass.
   invoked with a fixed argv list (never `shell=True`), and the only
   data-derived bytes it sees are JSON *string values* inside well-formed
   ndjson the converter itself serialized. tile-join, also a fixed argv
-  list, only reads archives tippecanoe just wrote. Remaining exposure is a parser
+  list, only reads archives tippecanoe just wrote. So does tippecanoe-decode,
+  whose `--stats` output (tile coordinates, sizes, per-layer counts, no
+  feature data) is parsed with `json.loads`. Remaining exposure is a parser
   bug in tippecanoe itself (mature, widely-fuzzed C); running the service
   sandboxed with write access to its spool only bounds what such a bug
   could touch.
@@ -72,6 +74,11 @@ Overpass.
   damage at a time. A monster single element (a relation with tens of
   thousands of members) is buffered in RAM while parsed — element-sized,
   and itself inside the maxsize budget.
+  Dense data also costs more bake passes: the probe passes run without the
+  tile size limit, and an over-limit zoom is rebaked up to five times, with
+  deeper zooms up to z16. Bounds: the zoom ceiling, the fixed attempt
+  count, and the maxsize budget on the input; São Paulo buildings (about
+  2 million features) bakes in about 12 minutes into a 121 MB archive.
 - **Content poisoning** — an attacker can put garbage *data* on the map
   (wrong names, junk geometry) and it will faithfully appear in tiles and
   stats. That is OSM vandalism, not a service compromise; the community
