@@ -12,7 +12,7 @@ import time
 
 import config
 from config import (HERE, ID_RE, MAX_AGE_BANDS, MAX_FILTER_KEYS, MAX_MAXSIZE, MAX_QUERY,
-                    MAX_TIMEOUT, OUTPUTS, log, now_iso)
+                    MAX_TIMEOUT, OUTPUTS, RELEASE, log, now_iso)
 from runner import Q, recover, worker
 from spool import job_directory, list_jobs, read_job, sweep, write_job
 
@@ -20,9 +20,6 @@ CREATE_LOCK = threading.Lock()
 STARTED_AT = time.time()
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
-
-with open(os.path.join(HERE, "VERSION")) as f:
-    RELEASE = f.read().strip()
 
 
 def spool_bytes() -> int:

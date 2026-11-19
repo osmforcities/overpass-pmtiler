@@ -575,8 +575,11 @@ def selftest():
             os.makedirs(shim_dir)
             shim_path = os.path.join(shim_dir, "tippecanoe")
 
+            user_agents = []
+
             class FixtureOverpass(http.server.BaseHTTPRequestHandler):
                 def do_POST(self):
+                    user_agents.append(self.headers["User-Agent"])
                     # an unread body makes the close a TCP reset
                     self.rfile.read(int(self.headers["Content-Length"]))
                     self.send_response(200)
@@ -613,6 +616,7 @@ def selftest():
                     failed = read_job(jid)
                     assert failed["state"] == "failed", failed
                     errors[jid] = failed["error"]
+                assert user_agents[0] == config.USER_AGENT, user_agents
                 error = errors["bake"]
                 assert error.startswith("tippecanoe: bad input 6\n"), error
                 assert error.endswith("bad input 25"), error
