@@ -360,6 +360,10 @@ def main():
         assert mix["points"] + mix["lines"] + mix["areas"] == stats["features"], mix
         assert mix["areas"] > mix["lines"] and mix["areas"] > mix["points"], mix
         assert mix["areaKm2"] > 0 and mix["lineKm"] >= 0, mix
+        assert mix["areasPerKm2"] > 0 and mix["pointsPerKm2"] >= 0, mix
+        assert [size for size, _ in mix["cellOverlap"]] == \
+            [1024, 512, 256, 128, 64, 32, 16], mix
+        assert all(0 <= share < 1 for _, share in mix["cellOverlap"]), mix
         print("dims: building top=%s(%d) missing=%d; mix: %d areas, %.2f km2" % (
             building["values"][0]["value"], building["values"][0]["count"],
             building["missing"], mix["areas"], mix["areaKm2"]))
