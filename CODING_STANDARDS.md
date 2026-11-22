@@ -39,9 +39,21 @@ How code in this repo should be written. Reviewers (human and agent) check chang
 
 ## Comments
 
-- Names first. A comment that says what a value, function or block is means the name is wrong: rename and delete the comment.
-- Comment only what code can't say: a non-obvious reason, a bug workaround, an outside constraint (Overpass behavior, tippecanoe quirk). One line by default.
-- Module docstrings are the exception: they hold the concern, invariants and known ceilings (see Layout), and can run longer.
+Default is no comment. Names, `--selftest` assertions and ADRs carry meaning; comments rot. Before writing one, classify it:
+
+- Tautology (repeats what the code shows): don't write it. Rename until the code says it.
+- Excuse (explains a hack, shortcut, "for now", "temporary", TODO, FIXME): don't write it. Fix the code, or keep it and file an issue.
+- Decision record (a non-obvious, lasting choice and its why): write an ADR in `docs/adr/` (create it with the first one), not a comment.
+- Stale (describes code, behavior or history that no longer holds): delete on sight.
+
+Allowed:
+
+- Module docstrings (see Layout): concern, invariants, known ceilings. No decision history; that goes in an ADR.
+- One line for an outside constraint the code can't express (Overpass behavior, tippecanoe quirk), with the source URL when there is one.
+- Tool directives (`# noqa`) with the reason on the same line.
+
+Never: commented-out code, section banners, function docstrings that restate the signature, changelog-style history ("was X, now Y"). A PR that touches a comment in a banned category deletes or moves it.
+
 - No bare issue or PR refs (`#12`, `see #9`): they don't resolve where code is read. State the reason; use a full URL only if the ticket adds something the comment can't.
 
 ## Commits and PRs
