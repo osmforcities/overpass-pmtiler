@@ -637,6 +637,16 @@ def selftest():
                 with open(header_path, "wb") as f:
                     f.write(b"PMTiles\x03" + bytes(64) + b"\x01" + bytes(54))
                 calls_path = os.path.join(scratch_dir, "calls")
+                # the decode shim answers the tile sizes a test stages per
+                # archive name, none staged meaning every tile fits
+                decode_path = os.path.join(shim_dir, "tippecanoe-decode")
+                sizes_dir = os.path.join(scratch_dir, "sizes")
+                os.makedirs(sizes_dir)
+                with open(decode_path, "w") as f:
+                    f.write('#!/bin/sh\necho "$(basename $0) $*" >> %s\n'
+                            'cat %s/$2.json 2>/dev/null || echo "[]"\n'
+                            % (calls_path, sizes_dir))
+                os.chmod(decode_path, 0o755)
                 with open(shim_path, "w") as f:
                     f.write('#!/bin/sh\necho "$*" >> %s\n'
                             'case " $* " in *" -zg "*)\n'
@@ -652,18 +662,17 @@ def selftest():
                 assert done["state"] == "done", done
                 with open(calls_path) as f:
                     calls = f.read().splitlines()
-                assert len(calls) == 2, calls
+                assert len(calls) == 4, calls
                 assert calls[1] == calls[0].replace(" -zg ", " -z14 "), calls
+                assert calls[3] == "tippecanoe-decode --stats sparse.pmtiles", \
+                    calls
 
                 # a full bake reaching z14 gets z9-z13 rebaked with only the
                 # drawn keys and z14+ with every tag, joined after its own
-                # z0-z8; a full bake stopping at z13 is the archive as is.
-                # The decode shim answers the tile sizes a test stages per
-                # archive name, none staged meaning every tile fits
+                # z0-z8; a full bake stopping at z13 gets every zoom rebaked
+                # without a drop rate, the probe itself being the archive
+                # when every tile fits
                 tile_join_path = os.path.join(shim_dir, "tile-join")
-                decode_path = os.path.join(shim_dir, "tippecanoe-decode")
-                sizes_dir = os.path.join(scratch_dir, "sizes")
-                os.makedirs(sizes_dir)
                 copy_header_shim = ('#!/bin/sh\necho "$(basename $0) $*" >> %s\n'
                                     'while [ "$1" != "-o" ]; do shift; done\n'
                                     'cp %s "$2"\n' % (calls_path, header_path))
@@ -671,11 +680,6 @@ def selftest():
                     with open(path, "w") as f:
                         f.write(copy_header_shim)
                     os.chmod(path, 0o755)
-                with open(decode_path, "w") as f:
-                    f.write('#!/bin/sh\necho "$(basename $0) $*" >> %s\n'
-                            'cat %s/$2.json 2>/dev/null || echo "[]"\n'
-                            % (calls_path, sizes_dir))
-                os.chmod(decode_path, 0o755)
 
                 def stage_sizes(name, sizes):
                     with open(os.path.join(sizes_dir, name + ".json"), "w") as f:
@@ -700,7 +704,15 @@ def selftest():
                         calls = f.read().splitlines()
                     assert calls[0].startswith("tippecanoe -f -zg "), calls
                     if max_zoom == 13:
-                        assert len(calls) == 1, calls
+                        sparse = calls[1]
+                        assert " -Z0 -z13 -B14 -r1.0000 " in sparse, sparse
+                        assert " -y " not in sparse, sparse
+                        assert " --no-tile-size-limit " in sparse, sparse
+                        assert calls[2:] == [
+                            "tippecanoe-decode --stats sparse.pmtiles"], calls
+                        assert sorted(f for f in os.listdir(job_directory(jid))
+                                      if f.endswith(".pmtiles")) == \
+                            ["output.pmtiles"], os.listdir(job_directory(jid))
                         continue
                     high = calls[1]
                     assert " -Z14 -z14 -B15 -r1.0000 " in high, high
@@ -723,10 +735,10 @@ def selftest():
                                   if f.endswith(".pmtiles")) == \
                         ["output.pmtiles"], os.listdir(job_directory(jid))
 
-                def bake_dense(jid, staged):
+                def bake_dense(jid, staged, max_zoom=14):
                     for name, sizes in staged.items():
                         stage_sizes(name, sizes)
-                    write_header(14)
+                    write_header(max_zoom)
                     open(calls_path, "w").close()
                     create_job({"id": jid, "query": "way;out;",
                                 "state": "queued", "startedAt": now_iso()})
@@ -794,6 +806,23 @@ def selftest():
                     join + "-o output.pmtiles low.pmtiles slim-z11.pmtiles"
                            " slim-z10.pmtiles slim-z9.pmtiles"
                            " slim-whole.pmtiles high.pmtiles"], joins
+
+                # a sparse archive's over-cap zoom is thinned by the same
+                # rule, the fitting zooms above it cut whole from the probe
+                bakes, joins = bake_dense("sparse-over", {
+                    "sparse.pmtiles": {11: 2_000_000, 12: 450_000},
+                    "sparse-z11.pmtiles": {11: 400_000}}, max_zoom=13)
+                assert bakes == [
+                    "tippecanoe -f -Z0 -z13 -B14 -r1.0000",
+                    *["tippecanoe -f -Z%d -z%d -B%d -r5.0000"
+                      % (zoom, zoom, zoom + 1) for zoom in range(11, -1, -1)]
+                ], bakes
+                assert joins == [
+                    join + "-Z12 -o sparse-whole.pmtiles sparse.pmtiles",
+                    join + "-o output.pmtiles "
+                    + " ".join("sparse-z%d.pmtiles" % zoom
+                               for zoom in range(11, -1, -1))
+                    + " sparse-whole.pmtiles"], joins
 
                 # a zoom no rate brings under the cap gets the capped bake
                 bake_dense("over-anyway", {

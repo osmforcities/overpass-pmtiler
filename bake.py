@@ -2,13 +2,16 @@
 
 An archive reaching z14 is a split bake: z9-z13 rebaked with only the kept
 keys (filterableTags, _ts, @id), z14+ rebaked with every tag, both joined
-with tile-join after the first bake's own z0-z8. A rebaked zoom whose largest
-tile is over the tile cap is thinned by one rate for the whole zoom, so
-density stays even across tiles, and no zoom keeps a bigger share of the
-features than the zoom above it. An over-cap top zoom gains deeper zooms
-until one fits, up to z16; a z16 still over the cap is thinned too. A zoom
-that one rate cannot bring under the cap falls back to tippecanoe's own
-per-tile dropping, which is uneven.
+with tile-join after the first bake's own z0-z8. An archive stopping at z13
+or lower is a sparse bake: every zoom rebaked with every feature, since the
+first bake's drop rate would thin it below the top zoom. A rebaked zoom
+whose largest tile is over the tile cap is thinned by one rate for the
+whole zoom, so density stays even across tiles, and no zoom keeps a bigger
+share of the features than the zoom above it. A split bake's over-cap top
+zoom gains deeper zooms until one fits, up to z16; a z16 still over the cap
+is thinned too; a sparse bake keeps its guessed top zoom and thins it. A
+zoom that one rate cannot bring under the cap falls back to tippecanoe's
+own per-tile dropping, which is uneven.
 """
 import glob
 import json
@@ -63,9 +66,16 @@ def stage_bake(job: dict, job_dir: str) -> None:
     archive_path = os.path.join(job_dir, ARCHIVE)
     validate_pmtiles(archive_path)
     top_zoom = max_zoom(archive_path)
-    if top_zoom > SLIM_MAX_ZOOM:
-        split_bake(job, job_dir, top_zoom)
-        validate_pmtiles(archive_path)
+    try:
+        if top_zoom > SLIM_MAX_ZOOM:
+            split_bake(job, job_dir, top_zoom)
+        else:
+            sparse_bake(job, job_dir, top_zoom)
+    finally:
+        for part in glob.glob(os.path.join(glob.escape(job_dir), "*.pmtiles")):
+            if os.path.basename(part) != ARCHIVE:
+                os.remove(part)
+    validate_pmtiles(archive_path)
     log("baked", job["id"], os.path.getsize(archive_path), "bytes")
 
 
@@ -78,22 +88,27 @@ def split_bake(job: dict, job_dir: str, top_zoom: int) -> None:
     kept_keys = []
     for key in [*(job.get("filterableTags") or []), "_ts", "@id"]:
         kept_keys += ["-y", key]
-    try:
-        high, high_share = even_density_parts(
-            job, job_dir, "high", SLIM_MAX_ZOOM + 1, top_zoom, [], 1.0,
-            extend=True)
-        slim, _ = even_density_parts(
-            job, job_dir, "slim", SLIM_MIN_ZOOM, SLIM_MAX_ZOOM,
-            ["--no-tiny-polygon-reduction", "--low-detail=10",
-             "--full-detail=10", *kept_keys], high_share)
-        os.replace(os.path.join(job_dir, ARCHIVE), os.path.join(job_dir, FULL))
-        run_tile_join(job, job_dir,
-                      ["-z%d" % (SLIM_MIN_ZOOM - 1), "-o", LOW, FULL])
-        run_tile_join(job, job_dir, ["-o", ARCHIVE, LOW, *slim, *high])
-    finally:
-        for part in glob.glob(os.path.join(glob.escape(job_dir), "*.pmtiles")):
-            if os.path.basename(part) != ARCHIVE:
-                os.remove(part)
+    high, high_share = even_density_parts(
+        job, job_dir, "high", SLIM_MAX_ZOOM + 1, top_zoom, [], 1.0,
+        extend=True)
+    slim, _ = even_density_parts(
+        job, job_dir, "slim", SLIM_MIN_ZOOM, SLIM_MAX_ZOOM,
+        ["--no-tiny-polygon-reduction", "--low-detail=10",
+         "--full-detail=10", *kept_keys], high_share)
+    os.replace(os.path.join(job_dir, ARCHIVE), os.path.join(job_dir, FULL))
+    run_tile_join(job, job_dir,
+                  ["-z%d" % (SLIM_MIN_ZOOM - 1), "-o", LOW, FULL])
+    run_tile_join(job, job_dir, ["-o", ARCHIVE, LOW, *slim, *high])
+
+
+def sparse_bake(job: dict, job_dir: str, top_zoom: int) -> None:
+    parts, _ = even_density_parts(job, job_dir, "sparse", 0, top_zoom,
+                                  flags=[], share_ceiling=1.0)
+    if len(parts) == 1:
+        os.replace(os.path.join(job_dir, parts[0]),
+                   os.path.join(job_dir, ARCHIVE))
+    else:
+        run_tile_join(job, job_dir, ["-o", ARCHIVE, *parts])
 
 
 def even_density_parts(job: dict, job_dir: str, prefix: str, min_zoom: int,
