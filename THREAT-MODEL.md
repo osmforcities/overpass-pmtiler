@@ -46,7 +46,7 @@ Overpass.
   string is ever used as a filesystem path.
 - **Forged failure via a `remark` tag** — Overpass reports runtime errors
   as a top-level `"remark"` key; the detector is anchored to column 0,
-  where Overpass writes it (#91), and a JSON string cannot contain a
+  where Overpass writes it, and a JSON string cannot contain a
   literal newline, so a tag value cannot fabricate a top-level-looking
   line (#26, tested both ways in the selftest).
 - **Splitter desync via braces in tag values** — the element splitter
