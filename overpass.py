@@ -26,9 +26,8 @@ SETTING_RE = re.compile(r"\[\s*(?:maxsize|timeout)\s*:\s*\d+\s*\]", re.I)
 # not retry, unlike unclassified failures.
 TOO_LARGE_RE = re.compile(
     r"out of memory|total_available_space|Dispatcher_Client", re.I)
-# anchored to the pretty-printer's top-level indent: an element's remark=* TAG
-# sits deeper and must not fail a successful fetch
-REMARK_RE = re.compile(r'^  "remark"\s*:\s*"((?:[^"\\]|\\.)*)"', re.M)
+# Overpass writes the top-level remark at column 0; a remark=* tag sits deeper
+REMARK_RE = re.compile(r'^"remark"\s*:\s*"((?:[^"\\]|\\.)*)"', re.M)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 # seconds of socket timeout beyond the query's own [timeout:], so Overpass
 # reports its timeout before the socket gives up; selftest shrinks it

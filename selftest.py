@@ -899,13 +899,18 @@ def selftest():
         except StageError as e:
             assert str(e) == "bake produced an archive with no tiles", e
 
-        # tail_remark: a top-level remark (2-space indent) is a runtime
-        # error; the OSM tag remark=* on an element is data, not an error
+        # tail_remark: a remark=* tag on an element is data, not an error
         remark_tail_path = os.path.join(scratch_dir, "tail.json")
+        with open(remark_tail_path, "w", encoding="utf-8") as f:
+            f.write('{\n  "elements": [\n\n\n\n  ],\n'
+                    '"remark": "runtime error: Query run out of memory using'
+                    ' about 3072 MB of RAM."\n}\n')
+        assert tail_remark(remark_tail_path) == (
+            "runtime error: Query run out of memory using about 3072 MB of RAM.")
         with open(remark_tail_path, "w", encoding="utf-8") as f:
             f.write('{\n  "elements": [\n{\n  "type": "node",\n'
                     '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ],\n'
-                    '  "remark": "runtime error: Query timed out"\n}\n')
+                    '"remark": "runtime error: Query timed out"\n}\n')
         assert tail_remark(remark_tail_path) == "runtime error: Query timed out"
         with open(remark_tail_path, "w", encoding="utf-8") as f:
             f.write('{\n  "elements": [\n{\n  "type": "node",\n'

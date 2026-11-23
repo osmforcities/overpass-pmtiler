@@ -113,7 +113,7 @@ if not LIVE:
                               if marker in query), None)
             if "huge_area" in query:
                 # over-ceiling: Overpass answers 200 with a runtime remark
-                body = ('{\n  "elements": [\n  ],\n  "remark": "runtime error:'
+                body = ('{\n  "elements": [\n\n\n\n  ],\n"remark": "runtime error:'
                         ' Query run out of memory using about 2048 MB of'
                         ' RAM."\n}\n').encode()
                 self.reply(200, "application/json", body)
