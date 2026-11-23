@@ -113,9 +113,7 @@ if not LIVE:
                               if marker in query), None)
             if "huge_area" in query:
                 # over-ceiling: Overpass answers 200 with a runtime remark
-                body = ('{\n  "elements": [\n  ],\n  "remark": "runtime error:'
-                        ' Query run out of memory using about 2048 MB of'
-                        ' RAM."\n}\n').encode()
+                body = pmtiler.OVER_CEILING_BODY.encode()
                 self.reply(200, "application/json", body)
             elif "dispatcher_error" in query:
                 # the other over-ceiling shape: status 200, but the body is

@@ -45,10 +45,11 @@ Overpass.
   (#31); output names go through the `OUTPUTS` allowlist; no data-derived
   string is ever used as a filesystem path.
 - **Forged failure via a `remark` tag** — Overpass reports runtime errors
-  as a top-level `"remark"` key; the detector is anchored to the
-  pretty-printer's 2-space indent, and a JSON string cannot contain a
-  literal newline, so a tag value cannot fabricate a top-level-looking
-  line (#26, tested both ways in the selftest).
+  as a `"remark"` key written last, right after the elements array; the
+  detector only accepts a remark followed by the document's closing `}`,
+  and a tag is always followed by its element's closing brackets, so a tag
+  value cannot fabricate one, whatever the whitespace (tested both ways in
+  the selftest).
 - **Splitter desync via braces in tag values** — the element splitter
   counts braces string-aware (#29, tested); before that fix a `{` in a tag
   value silently swallowed elements.

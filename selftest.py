@@ -20,7 +20,7 @@ from convert import (OVERLAP_CELL_SIZES_M, brace_delta, cell_overlap, convert,
                      is_area, local_density_per_km2)
 from errors import Aborted, StageError
 from overpass import (apply_settings, classify_error, head_error,
-                      html_error, tail_remark)
+                      html_error, tail_runtime_error)
 from runner import Q, recover, run_job
 from spool import (create_job, job_directory, list_jobs, progress_writer,
                    read_job, sweep, write_job)
@@ -191,6 +191,53 @@ ERROR_PAGE = ('<?xml version="1.0" encoding="UTF-8"?>\n<html><body>'
               ' open64: 0 Success /osm3s_areas Dispatcher_Client'
               '::request_read_and_idx::protocol_error</p>'
               '</body></html>\n')
+
+# Verbatim from Overpass 0.7.62, layout included: do not hand-edit, recapture.
+# [maxsize:100000];nwr[building](51.99,4.34,52.02,4.38);out;
+OVER_CEILING_BODY = r'''{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62 7c32a7d5",
+  "osm3s": {
+    "timestamp_osm_base": "2026-11-23T20:44:04Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+
+
+  ],
+"remark": "runtime error: Query ran out of memory in \"query\" at line 1. It would need at least 2 MB of RAM to continue."
+}
+'''
+# nwr[remark](51.9,4.2,52.1,4.5);out 1;
+REMARK_TAG_BODY = '''{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62 7c32a7d5",
+  "osm3s": {
+    "timestamp_osm_base": "2026-11-23T20:44:04Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+{
+  "type": "node",
+  "id": 602282864,
+  "lat": 51.9174497,
+  "lon": 4.4544593,
+  "tags": {
+    "addr:city": "Rotterdam",
+    "addr:country": "NL",
+    "addr:street": "Vierambachtsstraat",
+    "name": "Richard Visser's gebakkraam",
+    "operator": "Richard Visser",
+    "remark": "only in winter",
+    "shop": "bakery"
+  }
+}
+
+  ]
+}
+'''
 
 
 def selftest():
@@ -899,18 +946,20 @@ def selftest():
         except StageError as e:
             assert str(e) == "bake produced an archive with no tiles", e
 
-        # tail_remark: a top-level remark (2-space indent) is a runtime
-        # error; the OSM tag remark=* on an element is data, not an error
         remark_tail_path = os.path.join(scratch_dir, "tail.json")
-        with open(remark_tail_path, "w", encoding="utf-8") as f:
-            f.write('{\n  "elements": [\n{\n  "type": "node",\n'
-                    '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ],\n'
-                    '  "remark": "runtime error: Query timed out"\n}\n')
-        assert tail_remark(remark_tail_path) == "runtime error: Query timed out"
-        with open(remark_tail_path, "w", encoding="utf-8") as f:
-            f.write('{\n  "elements": [\n{\n  "type": "node",\n'
-                    '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ]\n}\n')
-        assert tail_remark(remark_tail_path) is None
+        out_of_memory = ('runtime error: Query ran out of memory in "query" at'
+                         ' line 1. It would need at least 2 MB of RAM to continue.')
+        informational = REMARK_TAG_BODY.replace(
+            "\n  ]\n}", '\n  ],\n"remark": "runtime remark: Timeout is 180'
+            ' and maxsize is 536870912."\n}')
+        for body, expected in (
+                (OVER_CEILING_BODY, out_of_memory),
+                (json.dumps(json.loads(OVER_CEILING_BODY)), out_of_memory),
+                (REMARK_TAG_BODY, None),
+                (informational, None)):
+            with open(remark_tail_path, "w", encoding="utf-8") as f:
+                f.write(body)
+            assert tail_runtime_error(remark_tail_path) == expected, body
 
         # head_error: Overpass can answer 200 with its HTML error page, and
         # the converter would blame the response format instead of Overpass

@@ -6,6 +6,7 @@ errors -- an HTML error page (under any status, 200 included), and a
 query: it fails transient and never classifies.
 """
 import html
+import json
 import os
 import re
 import ssl
@@ -26,9 +27,10 @@ SETTING_RE = re.compile(r"\[\s*(?:maxsize|timeout)\s*:\s*\d+\s*\]", re.I)
 # not retry, unlike unclassified failures.
 TOO_LARGE_RE = re.compile(
     r"out of memory|total_available_space|Dispatcher_Client", re.I)
-# anchored to the pretty-printer's top-level indent: an element's remark=* TAG
-# sits deeper and must not fail a successful fetch
-REMARK_RE = re.compile(r'^  "remark"\s*:\s*"((?:[^"\\]|\\.)*)"', re.M)
+# Overpass's JSON footer puts "remark" last, right after the elements array:
+# a remark=* tag is always followed by more closing brackets, never matches
+TRAILING_REMARK_RE = re.compile(
+    r'\]\s*,\s*"remark"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}\s*$')
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 # seconds of socket timeout beyond the query's own [timeout:], so Overpass
 # reports its timeout before the socket gives up; selftest shrinks it
@@ -88,14 +90,19 @@ def head_error(path: str) -> str | None:
     return text if text.startswith("Error") else None  # html_error anchors there
 
 
-def tail_remark(path: str) -> str | None:
-    """Overpass reports runtime errors as a "remark" key in an otherwise-200 body."""
+def tail_runtime_error(path: str) -> str | None:
+    """Overpass sends 200 before it runs the query, so a runtime error can only
+    land in the closing "remark" key. Its informational "runtime remark: ..."
+    lines share that key and are not failures."""
     size = os.path.getsize(path)
     with open(path, "rb") as f:
         f.seek(max(0, size - 8192))
         tail = f.read().decode("utf-8", "replace")
-    match = REMARK_RE.search(tail)
-    return match.group(1) if match else None
+    match = TRAILING_REMARK_RE.search(tail)
+    if not match:
+        return None
+    remark = json.loads(match.group(1))
+    return remark if remark.startswith("runtime error") else None
 
 
 def stage_fetch(job: dict, path: str) -> None:
@@ -132,7 +139,7 @@ def stage_fetch(job: dict, path: str) -> None:
     error_text = head_error(path)
     if error_text:
         raise StageError(error_text)
-    remark = tail_remark(path)
-    if remark:
-        raise StageError(remark)
+    runtime_error = tail_runtime_error(path)
+    if runtime_error:
+        raise StageError(runtime_error)
     log("fetched", job["id"], os.path.getsize(path), "bytes")
