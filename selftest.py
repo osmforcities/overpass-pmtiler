@@ -20,7 +20,7 @@ from convert import (OVERLAP_CELL_SIZES_M, brace_delta, cell_overlap, convert,
                      is_area, local_density_per_km2)
 from errors import Aborted, StageError
 from overpass import (apply_settings, classify_error, head_error,
-                      html_error, tail_remark)
+                      html_error, tail_runtime_error)
 from runner import Q, recover, run_job
 from spool import (create_job, job_directory, list_jobs, progress_writer,
                    read_job, sweep, write_job)
@@ -946,16 +946,20 @@ def selftest():
         except StageError as e:
             assert str(e) == "bake produced an archive with no tiles", e
 
-        # tail_remark: a remark=* tag on an element is data, not an error
         remark_tail_path = os.path.join(scratch_dir, "tail.json")
-        with open(remark_tail_path, "w", encoding="utf-8") as f:
-            f.write(OVER_CEILING_BODY)
-        assert tail_remark(remark_tail_path) == (
-            r'runtime error: Query ran out of memory in \"query\" at line 1.'
-            ' It would need at least 2 MB of RAM to continue.')
-        with open(remark_tail_path, "w", encoding="utf-8") as f:
-            f.write(REMARK_TAG_BODY)
-        assert tail_remark(remark_tail_path) is None
+        out_of_memory = ('runtime error: Query ran out of memory in "query" at'
+                         ' line 1. It would need at least 2 MB of RAM to continue.')
+        informational = REMARK_TAG_BODY.replace(
+            "\n  ]\n}", '\n  ],\n"remark": "runtime remark: Timeout is 180'
+            ' and maxsize is 536870912."\n}')
+        for body, expected in (
+                (OVER_CEILING_BODY, out_of_memory),
+                (json.dumps(json.loads(OVER_CEILING_BODY)), out_of_memory),
+                (REMARK_TAG_BODY, None),
+                (informational, None)):
+            with open(remark_tail_path, "w", encoding="utf-8") as f:
+                f.write(body)
+            assert tail_runtime_error(remark_tail_path) == expected, body
 
         # head_error: Overpass can answer 200 with its HTML error page, and
         # the converter would blame the response format instead of Overpass
