@@ -192,6 +192,53 @@ ERROR_PAGE = ('<?xml version="1.0" encoding="UTF-8"?>\n<html><body>'
               '::request_read_and_idx::protocol_error</p>'
               '</body></html>\n')
 
+# Verbatim from Overpass 0.7.62, layout included: do not hand-edit, recapture.
+# [maxsize:100000];nwr[building](51.99,4.34,52.02,4.38);out;
+OVER_CEILING_BODY = r'''{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62 7c32a7d5",
+  "osm3s": {
+    "timestamp_osm_base": "2026-11-23T20:44:04Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+
+
+  ],
+"remark": "runtime error: Query ran out of memory in \"query\" at line 1. It would need at least 2 MB of RAM to continue."
+}
+'''
+# nwr[remark](51.9,4.2,52.1,4.5);out 1;
+REMARK_TAG_BODY = '''{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62 7c32a7d5",
+  "osm3s": {
+    "timestamp_osm_base": "2026-11-23T20:44:04Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+{
+  "type": "node",
+  "id": 602282864,
+  "lat": 51.9174497,
+  "lon": 4.4544593,
+  "tags": {
+    "addr:city": "Rotterdam",
+    "addr:country": "NL",
+    "addr:street": "Vierambachtsstraat",
+    "name": "Richard Visser's gebakkraam",
+    "operator": "Richard Visser",
+    "remark": "only in winter",
+    "shop": "bakery"
+  }
+}
+
+  ]
+}
+'''
+
 
 def selftest():
     scratch_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -902,19 +949,12 @@ def selftest():
         # tail_remark: a remark=* tag on an element is data, not an error
         remark_tail_path = os.path.join(scratch_dir, "tail.json")
         with open(remark_tail_path, "w", encoding="utf-8") as f:
-            f.write('{\n  "elements": [\n\n\n\n  ],\n'
-                    '"remark": "runtime error: Query run out of memory using'
-                    ' about 3072 MB of RAM."\n}\n')
+            f.write(OVER_CEILING_BODY)
         assert tail_remark(remark_tail_path) == (
-            "runtime error: Query run out of memory using about 3072 MB of RAM.")
+            r'runtime error: Query ran out of memory in \"query\" at line 1.'
+            ' It would need at least 2 MB of RAM to continue.')
         with open(remark_tail_path, "w", encoding="utf-8") as f:
-            f.write('{\n  "elements": [\n{\n  "type": "node",\n'
-                    '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ],\n'
-                    '"remark": "runtime error: Query timed out"\n}\n')
-        assert tail_remark(remark_tail_path) == "runtime error: Query timed out"
-        with open(remark_tail_path, "w", encoding="utf-8") as f:
-            f.write('{\n  "elements": [\n{\n  "type": "node",\n'
-                    '  "tags": {\n    "remark": "corner note"\n  }\n}\n  ]\n}\n')
+            f.write(REMARK_TAG_BODY)
         assert tail_remark(remark_tail_path) is None
 
         # head_error: Overpass can answer 200 with its HTML error page, and
